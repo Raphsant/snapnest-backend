@@ -61,9 +61,9 @@ async function bootstrap() {
     allowedHeaders: '*',
   });
 
-  const port: number = Number(configService.get<string>('PORT') ?? 3000);
+  const port: number = Number(process.env.PORT ?? 3000);
 
-  await app.listen(port);
-  Logger.log(`SnapNest backend listening on http://localhost:${port}`);
+  await app.listen(port, '0.0.0.0');
+  Logger.log(`SnapNest backend listening on http://0.0.0.0:${port}`);
 }
 bootstrap();
