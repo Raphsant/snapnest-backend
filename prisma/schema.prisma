@@ -1,0 +1,133 @@
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AccountType {
+  PERSONAL
+  AGENCY_CLIENT
+  AGENCY_STAFF
+  ADMIN
+}
+
+enum FolderType {
+  PERSONAL
+  AGENCY_INTAKE
+  AGENCY_RAW
+  AGENCY_PRODUCED
+  APPROVED
+  REJECTED
+  NEEDS_MODIFICATIONS
+}
+
+enum FileSource {
+  CAMERA
+  GALLERY
+}
+
+enum FileType {
+  PHOTO
+  VIDEO
+  AUDIO
+  TRANSCRIPT
+  SUBTITLE
+}
+
+enum UploadStatus {
+  PENDING
+  UPLOADING
+  UPLOADED
+  FAILED
+}
+
+enum ReviewStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  NEEDS_MODIFICATIONS
+}
+
+enum JobStatus {
+  REQUESTED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id          String      @id @default(uuid())
+  cognitoSub  String      @unique
+  email       String      @unique
+  firstName   String?
+  accountType AccountType @default(PERSONAL)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  folders    Folder[]
+  files      MediaFile[]
+  uploadJobs UploadJob[]
+
+  @@index([cognitoSub])
+}
+
+model Folder {
+  id             String     @id @default(uuid())
+  ownerId        String
+  name           String
+  type           FolderType @default(PERSONAL)
+  parentFolderId String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  owner    User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  parent   Folder?    @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: SetNull)
+  children Folder[]   @relation("FolderHierarchy")
+  files    MediaFile[]
+
+  @@index([ownerId])
+  @@index([parentFolderId])
+}
+
+model MediaFile {
+  id             String       @id @default(uuid())
+  ownerId        String
+  folderId       String?
+  fileName       String
+  mimeType       String
+  sizeBytes      BigInt
+  s3Key          String       @unique
+  fileType       FileType
+  source         FileSource
+  uploadStatus   UploadStatus @default(PENDING)
+  reviewStatus   ReviewStatus?
+  durationSeconds Int?
+  thumbnailS3Key String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  folder    Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  uploadJob UploadJob?
+
+  @@index([ownerId])
+  @@index([folderId])
+  @@index([ownerId, createdAt(sort: Desc)])
+}
+
+model UploadJob {
+  id           String    @id @default(uuid())
+  userId       String
+  fileId       String    @unique
+  status       JobStatus @default(REQUESTED)
+  expiresAt    DateTime
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file MediaFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+}
