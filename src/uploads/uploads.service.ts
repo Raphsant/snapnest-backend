@@ -21,6 +21,7 @@ import {
   UploadStatus,
 } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import { AgencyService } from '../agency/agency.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUploadDto, UploadSource } from './dto/create-upload.dto';
 import { ThumbnailService } from './thumbnail.service';
@@ -89,6 +90,7 @@ export class UploadsService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly thumbnailService: ThumbnailService,
+    private readonly agencyService: AgencyService,
   ) {
     const region: string = this.configService.get<string>('AWS_REGION', '');
     const accessKeyId: string = this.configService.get<string>(
@@ -114,7 +116,13 @@ export class UploadsService {
     userId: string,
     dto: CreateUploadDto,
   ): Promise<PresignedUploadResponse> {
-    if (dto.folderId !== undefined) {
+    if (dto.agencyId !== undefined) {
+      // Agency submission: authorize by membership, and any target folder must belong to the agency.
+      await this.agencyService.assertAgencyMembership(userId, dto.agencyId);
+      if (dto.folderId !== undefined) {
+        await this.assertFolderInAgency(dto.folderId, dto.agencyId);
+      }
+    } else if (dto.folderId !== undefined) {
       await this.assertFolderOwnedByUser(dto.folderId, userId);
     }
 
@@ -145,6 +153,7 @@ export class UploadsService {
         const mediaFile = await tx.mediaFile.create({
           data: {
             ownerId: userId,
+            agencyId: dto.agencyId ?? null,
             folderId: dto.folderId ?? null,
             fileName: dto.fileName,
             mimeType: dto.mimeType,
@@ -226,6 +235,7 @@ export class UploadsService {
   async getBatchViewUrls(
     userId: string,
     fileIds: string[],
+    agencyId?: string,
   ): Promise<BatchFileViewUrlItem[]> {
     if (fileIds.length > MAX_BATCH_VIEW_URL_IDS) {
       throw new BadRequestException(
@@ -233,10 +243,20 @@ export class UploadsService {
       );
     }
 
+    // Agency scope authorizes by membership (files owned by other members are allowed);
+    // personal scope restricts strictly to the caller's own files.
+    let scopeWhere: Pick<Prisma.MediaFileWhereInput, 'ownerId' | 'agencyId'>;
+    if (agencyId !== undefined) {
+      await this.agencyService.assertAgencyMembership(userId, agencyId);
+      scopeWhere = { agencyId };
+    } else {
+      scopeWhere = { ownerId: userId, agencyId: null };
+    }
+
     const files = await this.prisma.mediaFile.findMany({
       where: {
         id: { in: fileIds },
-        ownerId: userId,
+        ...scopeWhere,
         uploadStatus: UploadStatus.UPLOADED,
       },
     });
@@ -287,14 +307,12 @@ export class UploadsService {
     opts: GetUserFilesOptions,
   ): Promise<SerializedMediaFile[]> {
     const limitRaw: number = opts.limit ?? DEFAULT_FILES_LIMIT;
-    const limit: number = Math.min(
-      Math.max(limitRaw, 1),
-      MAX_FILES_LIMIT,
-    );
+    const limit: number = Math.min(Math.max(limitRaw, 1), MAX_FILES_LIMIT);
 
     const rows = await this.prisma.mediaFile.findMany({
       where: {
         ownerId: userId,
+        agencyId: null,
         ...this.buildFolderIdWhere(opts.folderId),
         ...(opts.before !== undefined
           ? { createdAt: { lt: opts.before } }
@@ -323,6 +341,9 @@ export class UploadsService {
     if (file.ownerId !== userId) {
       throw new ForbiddenException('Media file not accessible');
     }
+    if (file.agencyId !== null) {
+      throw new ForbiddenException('Agency files cannot be moved here');
+    }
 
     if (folderId !== null) {
       await this.assertFolderOwnedByUser(folderId, userId);
@@ -350,6 +371,9 @@ export class UploadsService {
     }
     if (file.ownerId !== userId) {
       throw new ForbiddenException('Media file not accessible');
+    }
+    if (file.agencyId !== null) {
+      throw new ForbiddenException('Agency files cannot be deleted here');
     }
 
     await this.deleteS3ObjectBestEffort(file.s3Key);
@@ -412,6 +436,21 @@ export class UploadsService {
       throw new NotFoundException('Folder not found');
     }
     if (folder.ownerId !== userId) {
+      throw new ForbiddenException('Folder not accessible');
+    }
+  }
+
+  private async assertFolderInAgency(
+    folderId: string,
+    agencyId: string,
+  ): Promise<void> {
+    const folder = await this.prisma.folder.findUnique({
+      where: { id: folderId },
+    });
+    if (folder === null) {
+      throw new NotFoundException('Folder not found');
+    }
+    if (folder.agencyId !== agencyId) {
       throw new ForbiddenException('Folder not accessible');
     }
   }

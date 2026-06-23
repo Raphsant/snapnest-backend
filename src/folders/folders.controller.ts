@@ -13,7 +13,11 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
-import { FolderWithFileCount, FolderWithFiles, FoldersService } from './folders.service';
+import {
+  FolderWithFileCount,
+  FolderWithFiles,
+  FoldersService,
+} from './folders.service';
 
 @Controller('folders')
 @UseGuards(AuthGuard)

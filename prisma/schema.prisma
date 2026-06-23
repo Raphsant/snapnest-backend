@@ -58,6 +58,11 @@ enum JobStatus {
   FAILED
 }
 
+enum AgencyRole {
+  CLIENT
+  STAFF
+}
+
 model User {
   id          String      @id @default(uuid())
   cognitoSub  String      @unique
@@ -67,16 +72,45 @@ model User {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
-  folders    Folder[]
-  files      MediaFile[]
-  uploadJobs UploadJob[]
+  folders     Folder[]
+  files       MediaFile[]
+  uploadJobs  UploadJob[]
+  memberships AgencyMembership[]
 
   @@index([cognitoSub])
+}
+
+model Agency {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships AgencyMembership[]
+  folders     Folder[]
+  files       MediaFile[]
+}
+
+model AgencyMembership {
+  id        String     @id @default(uuid())
+  agencyId  String
+  userId    String
+  role      AgencyRole @default(CLIENT)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([agencyId, userId])
+  @@index([userId])
+  @@index([agencyId])
 }
 
 model Folder {
   id             String     @id @default(uuid())
   ownerId        String
+  agencyId       String?
   name           String
   type           FolderType @default(PERSONAL)
   parentFolderId String?
@@ -84,17 +118,20 @@ model Folder {
   updatedAt      DateTime   @updatedAt
 
   owner    User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  agency   Agency?    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
   parent   Folder?    @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: SetNull)
   children Folder[]   @relation("FolderHierarchy")
   files    MediaFile[]
 
   @@index([ownerId])
+  @@index([agencyId])
   @@index([parentFolderId])
 }
 
 model MediaFile {
   id             String       @id @default(uuid())
   ownerId        String
+  agencyId       String?
   folderId       String?
   fileName       String
   mimeType       String
@@ -110,10 +147,12 @@ model MediaFile {
   updatedAt      DateTime     @updatedAt
 
   owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  agency    Agency?   @relation(fields: [agencyId], references: [id], onDelete: SetNull)
   folder    Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
   uploadJob UploadJob?
 
   @@index([ownerId])
+  @@index([agencyId])
   @@index([folderId])
   @@index([ownerId, createdAt(sort: Desc)])
 }

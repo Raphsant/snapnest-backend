@@ -46,7 +46,7 @@ export class FoldersService {
 
   async getUserFolders(userId: string): Promise<FolderWithFileCount[]> {
     return this.prisma.folder.findMany({
-      where: { ownerId: userId },
+      where: { ownerId: userId, agencyId: null },
       include: {
         _count: {
           select: { files: true },
@@ -56,7 +56,10 @@ export class FoldersService {
     });
   }
 
-  async getFolderById(folderId: string, userId: string): Promise<FolderWithFiles> {
+  async getFolderById(
+    folderId: string,
+    userId: string,
+  ): Promise<FolderWithFiles> {
     const folder = await this.prisma.folder.findUnique({
       where: { id: folderId },
       include: {
@@ -66,7 +69,7 @@ export class FoldersService {
         },
       },
     });
-    if (folder === null) {
+    if (folder === null || folder.agencyId !== null) {
       throw new NotFoundException('Folder not found');
     }
     if (folder.ownerId !== userId) {

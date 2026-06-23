@@ -29,6 +29,10 @@ export class CreateUploadDto {
   @IsUUID()
   folderId?: string;
 
+  @IsOptional()
+  @IsUUID()
+  agencyId?: string;
+
   @IsEnum(UploadSource)
   source!: UploadSource;
 }

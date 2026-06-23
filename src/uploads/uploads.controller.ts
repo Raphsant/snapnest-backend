@@ -93,6 +93,10 @@ export class FilesController {
     @CurrentUserId() userId: string,
     @Body() dto: BatchViewUrlsDto,
   ): Promise<BatchFileViewUrlItem[]> {
-    return this.uploadsService.getBatchViewUrls(userId, dto.fileIds);
+    return this.uploadsService.getBatchViewUrls(
+      userId,
+      dto.fileIds,
+      dto.agencyId,
+    );
   }
 }

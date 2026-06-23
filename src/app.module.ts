@@ -1,10 +1,13 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { AdminModule } from './admin/admin.module';
+import { AgencyModule } from './agency/agency.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { FoldersModule } from './folders/folders.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { UploadsModule } from './uploads/uploads.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -12,6 +15,9 @@ import { UploadsModule } from './uploads/uploads.module';
     PrismaModule,
     FoldersModule,
     UploadsModule,
+    UsersModule,
+    AgencyModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],
