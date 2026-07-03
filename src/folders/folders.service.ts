@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Folder, FolderType, Prisma } from '@prisma/client';
+import { Folder, FolderType, Prisma, UploadStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
@@ -49,7 +49,9 @@ export class FoldersService {
       where: { ownerId: userId, agencyId: null },
       include: {
         _count: {
-          select: { files: true },
+          select: {
+            files: { where: { uploadStatus: UploadStatus.UPLOADED } },
+          },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -64,6 +66,7 @@ export class FoldersService {
       where: { id: folderId },
       include: {
         files: {
+          where: { uploadStatus: UploadStatus.UPLOADED },
           orderBy: { createdAt: 'desc' },
           include: { folder: { select: { id: true, name: true } } },
         },
@@ -104,7 +107,9 @@ export class FoldersService {
       where: { id: folderId },
       include: {
         _count: {
-          select: { files: true },
+          select: {
+            files: { where: { uploadStatus: UploadStatus.UPLOADED } },
+          },
         },
       },
     });
@@ -118,8 +123,16 @@ export class FoldersService {
       throw new ConflictException('Folder is not empty');
     }
 
-    await this.prisma.folder.delete({
-      where: { id: folderId },
+    // Any files still referencing the folder are non-UPLOADED ghosts; detach
+    // them (keep the rows) so the folder can be deleted.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.mediaFile.updateMany({
+        where: { folderId },
+        data: { folderId: null },
+      });
+      await tx.folder.delete({
+        where: { id: folderId },
+      });
     });
   }
 }

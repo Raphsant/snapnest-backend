@@ -313,6 +313,7 @@ export class UploadsService {
       where: {
         ownerId: userId,
         agencyId: null,
+        uploadStatus: UploadStatus.UPLOADED,
         ...this.buildFolderIdWhere(opts.folderId),
         ...(opts.before !== undefined
           ? { createdAt: { lt: opts.before } }

@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AgencyMembership, Prisma } from '@prisma/client';
+import { AgencyMembership, Prisma, UploadStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 const agencyFileFolderInclude = {
@@ -65,7 +65,9 @@ export class AgencyService {
       where: { agencyId },
       include: {
         _count: {
-          select: { files: true },
+          select: {
+            files: { where: { uploadStatus: UploadStatus.UPLOADED } },
+          },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -80,6 +82,7 @@ export class AgencyService {
       where: { id: folderId },
       include: {
         files: {
+          where: { uploadStatus: UploadStatus.UPLOADED },
           orderBy: { createdAt: 'desc' },
           include: agencyFileFolderInclude,
         },
