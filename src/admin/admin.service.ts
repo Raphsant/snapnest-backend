@@ -4,6 +4,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -46,9 +47,15 @@ export type AdminAgencyListItem = Prisma.AgencyGetPayload<{
   include: { _count: { select: { memberships: true; folders: true } } };
 }>;
 
+/** Default folder auto-created when a client joins an agency. */
+const DEFAULT_MEMBER_FOLDER_NAME = 'General';
+const DEFAULT_MEMBER_FOLDER_TYPE = FolderType.AGENCY_RAW;
+
 export type AdminAgencyMember = Prisma.AgencyMembershipGetPayload<{
   include: { user: { select: typeof adminUserSelect } };
-}>;
+}> & {
+  _count: { folders: number };
+};
 
 export type AdminAgencyFolder = Prisma.FolderGetPayload<{
   include: typeof uploadedFilesCount;
@@ -127,12 +134,25 @@ export class AdminService {
     }
 
     try {
-      return await this.prisma.agencyMembership.create({
-        data: {
-          agencyId: dto.agencyId,
-          userId: user.id,
-          role: dto.role ?? AgencyRole.CLIENT,
-        },
+      return await this.prisma.$transaction(async (tx) => {
+        const membership = await tx.agencyMembership.create({
+          data: {
+            agencyId: dto.agencyId,
+            userId: user.id,
+            role: dto.role ?? AgencyRole.CLIENT,
+          },
+        });
+
+        await tx.folder.create({
+          data: {
+            ownerId: user.id,
+            agencyId: dto.agencyId,
+            name: DEFAULT_MEMBER_FOLDER_NAME,
+            type: DEFAULT_MEMBER_FOLDER_TYPE,
+          },
+        });
+
+        return membership;
       });
     } catch (error: unknown) {
       if (
@@ -147,7 +167,6 @@ export class AdminService {
 
   async createAgencyFolder(
     agencyId: string,
-    creatorUserId: string,
     dto: CreateAgencyFolderDto,
   ): Promise<Folder> {
     const agency = await this.prisma.agency.findUnique({
@@ -157,9 +176,20 @@ export class AdminService {
       throw new NotFoundException('Agency not found');
     }
 
+    const membership = await this.prisma.agencyMembership.findUnique({
+      where: {
+        agencyId_userId: { agencyId, userId: dto.userId },
+      },
+    });
+    if (membership === null) {
+      throw new BadRequestException(
+        'User is not a member of this agency',
+      );
+    }
+
     return this.prisma.folder.create({
       data: {
-        ownerId: creatorUserId,
+        ownerId: dto.userId,
         agencyId,
         name: dto.name.trim(),
         type: dto.type ?? FolderType.AGENCY_INTAKE,
@@ -181,10 +211,48 @@ export class AdminService {
   async getAgencyMembers(agencyId: string): Promise<AdminAgencyMember[]> {
     await this.assertAgencyExists(agencyId);
 
-    return this.prisma.agencyMembership.findMany({
-      where: { agencyId },
-      include: { user: { select: adminUserSelect } },
-      orderBy: { createdAt: 'asc' },
+    const [members, folderCounts] = await Promise.all([
+      this.prisma.agencyMembership.findMany({
+        where: { agencyId },
+        include: { user: { select: adminUserSelect } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.folder.groupBy({
+        by: ['ownerId'],
+        where: { agencyId },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const folderCountByOwner = new Map(
+      folderCounts.map((row) => [row.ownerId, row._count._all]),
+    );
+
+    return members.map((member) => ({
+      ...member,
+      _count: {
+        folders: folderCountByOwner.get(member.userId) ?? 0,
+      },
+    }));
+  }
+
+  async getMemberFolders(
+    agencyId: string,
+    userId: string,
+  ): Promise<AdminAgencyFolder[]> {
+    await this.assertAgencyExists(agencyId);
+
+    const membership = await this.prisma.agencyMembership.findUnique({
+      where: { agencyId_userId: { agencyId, userId } },
+    });
+    if (membership === null) {
+      throw new NotFoundException('Member not found in this agency');
+    }
+
+    return this.prisma.folder.findMany({
+      where: { agencyId, ownerId: userId },
+      include: uploadedFilesCount,
+      orderBy: { createdAt: 'desc' },
     });
   }
 

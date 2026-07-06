@@ -62,7 +62,7 @@ export class AgencyService {
     await this.assertAgencyMembership(userId, agencyId);
 
     return this.prisma.folder.findMany({
-      where: { agencyId },
+      where: { agencyId, ownerId: userId },
       include: {
         _count: {
           select: {
@@ -93,6 +93,10 @@ export class AgencyService {
     }
 
     await this.assertAgencyMembership(userId, folder.agencyId);
+
+    if (folder.ownerId !== userId) {
+      throw new NotFoundException('Folder not found');
+    }
 
     return {
       ...folder,

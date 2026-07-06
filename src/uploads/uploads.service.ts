@@ -120,7 +120,7 @@ export class UploadsService {
       // Agency submission: authorize by membership, and any target folder must belong to the agency.
       await this.agencyService.assertAgencyMembership(userId, dto.agencyId);
       if (dto.folderId !== undefined) {
-        await this.assertFolderInAgency(dto.folderId, dto.agencyId);
+        await this.assertFolderInAgency(dto.folderId, dto.agencyId, userId);
       }
     } else if (dto.folderId !== undefined) {
       await this.assertFolderOwnedByUser(dto.folderId, userId);
@@ -444,6 +444,7 @@ export class UploadsService {
   private async assertFolderInAgency(
     folderId: string,
     agencyId: string,
+    userId: string,
   ): Promise<void> {
     const folder = await this.prisma.folder.findUnique({
       where: { id: folderId },
@@ -452,6 +453,9 @@ export class UploadsService {
       throw new NotFoundException('Folder not found');
     }
     if (folder.agencyId !== agencyId) {
+      throw new ForbiddenException('Folder not accessible');
+    }
+    if (folder.ownerId !== userId) {
       throw new ForbiddenException('Folder not accessible');
     }
   }

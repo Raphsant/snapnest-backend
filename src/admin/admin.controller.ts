@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common';
 import { Agency, AgencyMembership, Folder } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
-import { CurrentUserId } from '../auth/current-user.decorator';
 import { AdminGuard } from './admin.guard';
 import {
   AdminAgencyFolder,
@@ -42,11 +41,10 @@ export class AdminController {
 
   @Post('agencies/:agencyId/folders')
   createAgencyFolder(
-    @CurrentUserId() userId: string,
     @Param('agencyId') agencyId: string,
     @Body() dto: CreateAgencyFolderDto,
   ): Promise<Folder> {
-    return this.adminService.createAgencyFolder(agencyId, userId, dto);
+    return this.adminService.createAgencyFolder(agencyId, dto);
   }
 
   // ── Read-only admin panel endpoints ────────────────────────────────────
@@ -61,6 +59,14 @@ export class AdminController {
     @Param('agencyId') agencyId: string,
   ): Promise<AdminAgencyMember[]> {
     return this.adminService.getAgencyMembers(agencyId);
+  }
+
+  @Get('agencies/:agencyId/members/:userId/folders')
+  getMemberFolders(
+    @Param('agencyId') agencyId: string,
+    @Param('userId') userId: string,
+  ): Promise<AdminAgencyFolder[]> {
+    return this.adminService.getMemberFolders(agencyId, userId);
   }
 
   @Get('agencies/:agencyId/folders')
