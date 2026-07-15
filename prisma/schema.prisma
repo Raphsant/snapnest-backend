@@ -58,6 +58,17 @@ enum JobStatus {
   FAILED
 }
 
+enum PipelineJobStatus {
+  QUEUED
+  RUNNING
+  AWAITING_MANIFEST_APPROVAL
+  APPROVED
+  AWAITING_CREATIVE_APPROVAL
+  CREATIVE_APPROVED
+  COMPLETED
+  FAILED
+}
+
 enum AgencyRole {
   CLIENT
   STAFF
@@ -74,8 +85,9 @@ model User {
 
   folders     Folder[]
   files       MediaFile[]
-  uploadJobs  UploadJob[]
-  memberships AgencyMembership[]
+  uploadJobs   UploadJob[]
+  pipelineJobs PipelineJob[]
+  memberships  AgencyMembership[]
 
   @@index([cognitoSub])
 }
@@ -87,8 +99,9 @@ model Agency {
   updatedAt DateTime @updatedAt
 
   memberships AgencyMembership[]
-  folders     Folder[]
-  files       MediaFile[]
+  folders      Folder[]
+  files        MediaFile[]
+  pipelineJobs PipelineJob[]
 }
 
 model AgencyMembership {
@@ -149,7 +162,8 @@ model MediaFile {
   owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   agency    Agency?   @relation(fields: [agencyId], references: [id], onDelete: SetNull)
   folder    Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  uploadJob UploadJob?
+  uploadJob    UploadJob?
+  pipelineJobs PipelineJob[]
 
   @@index([ownerId])
   @@index([agencyId])
@@ -169,4 +183,26 @@ model UploadJob {
 
   user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   file MediaFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+}
+
+model PipelineJob {
+  id            String            @id @default(uuid())
+  sourceFileId  String
+  agencyId      String
+  requestedById String
+  status        PipelineJobStatus @default(QUEUED)
+  currentStage  String?
+  error         String?
+  manifest      Json?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  sourceFile  MediaFile @relation(fields: [sourceFileId], references: [id], onDelete: Cascade)
+  agency      Agency    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  requestedBy User      @relation(fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@index([sourceFileId])
+  @@index([agencyId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
 }

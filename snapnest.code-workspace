@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../snapnest-dashboard"
+		},
+		{
+			"path": "../snapnest-worker"
 		}
 	],
 	"settings": {}
