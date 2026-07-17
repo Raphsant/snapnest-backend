@@ -16,6 +16,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   FileSource,
   FileType,
+  FolderType,
   JobStatus,
   Prisma,
   UploadStatus,
@@ -127,6 +128,14 @@ export class UploadsService {
       await this.assertFolderOwnedByUser(dto.folderId, userId);
     }
 
+    // Personal uploads must always land in a folder. When none is given, route
+    // to the caller's system "Unfiled" folder (created on demand). Agency-scoped
+    // uploads are untouched here.
+    let resolvedFolderId: string | null = dto.folderId ?? null;
+    if (dto.agencyId === undefined && dto.folderId === undefined) {
+      resolvedFolderId = await this.findOrCreateUnfiledFolder(userId);
+    }
+
     const timestamp: number = Date.now();
     const keySegmentUuid: string = uuidv4();
     const sanitizedFileName: string = this.sanitizeFileName(dto.fileName);
@@ -173,7 +182,7 @@ export class UploadsService {
           data: {
             ownerId: userId,
             agencyId: dto.agencyId ?? null,
-            folderId: dto.folderId ?? null,
+            folderId: resolvedFolderId,
             fileName: dto.fileName,
             mimeType: dto.mimeType,
             sizeBytes,
@@ -493,6 +502,49 @@ export class UploadsService {
     }
     if (folder.ownerId !== userId) {
       throw new ForbiddenException('Folder not accessible');
+    }
+  }
+
+  /**
+   * Resolves the caller's system "Unfiled" folder, creating it on first use.
+   * Race-safe against concurrent uploads from the same user: the partial unique
+   * index (Folder_one_system_per_owner_idx) guarantees at most one system folder
+   * per owner, so a losing insert surfaces as P2002 and we re-fetch the winner.
+   * Public so the backfill script (scripts/backfill-unfiled.ts) can reuse it.
+   */
+  async findOrCreateUnfiledFolder(userId: string): Promise<string> {
+    const existing = await this.prisma.folder.findFirst({
+      where: { ownerId: userId, isSystem: true },
+    });
+    if (existing !== null) {
+      return existing.id;
+    }
+
+    try {
+      const created = await this.prisma.folder.create({
+        data: {
+          ownerId: userId,
+          name: 'Unfiled',
+          type: FolderType.PERSONAL,
+          isSystem: true,
+        },
+      });
+      return created.id;
+    } catch (error: unknown) {
+      // The index isn't schema-declared, so P2002's meta.target is not
+      // meaningful — match on the code alone and re-fetch the racer's folder.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const raced = await this.prisma.folder.findFirst({
+          where: { ownerId: userId, isSystem: true },
+        });
+        if (raced !== null) {
+          return raced.id;
+        }
+      }
+      throw error;
     }
   }
 

@@ -126,6 +126,7 @@ model Folder {
   agencyId       String?
   name           String
   type           FolderType @default(PERSONAL)
+  isSystem       Boolean    @default(false)
   parentFolderId String?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt

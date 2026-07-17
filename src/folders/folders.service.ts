@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -95,6 +96,9 @@ export class FoldersService {
     if (folder.ownerId !== userId) {
       throw new ForbiddenException('Folder not accessible');
     }
+    if (folder.isSystem) {
+      throw new BadRequestException('System folders cannot be renamed');
+    }
 
     return this.prisma.folder.update({
       where: { id: folderId },
@@ -118,6 +122,9 @@ export class FoldersService {
     }
     if (folder.ownerId !== userId) {
       throw new ForbiddenException('Folder not accessible');
+    }
+    if (folder.isSystem) {
+      throw new BadRequestException('System folders cannot be deleted');
     }
     if (folder._count.files > 0) {
       throw new ConflictException('Folder is not empty');
