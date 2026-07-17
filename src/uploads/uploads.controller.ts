@@ -12,6 +12,7 @@ import {
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
 import { BatchViewUrlsDto } from './dto/batch-view-urls.dto';
+import { CompleteUploadDto } from './dto/complete-upload.dto';
 import { CreateUploadDto } from './dto/create-upload.dto';
 import { ListFilesQueryDto } from './dto/list-files-query.dto';
 import { MoveFileToFolderDto } from './dto/move-file-to-folder.dto';
@@ -40,9 +41,14 @@ export class UploadsController {
   @Post(':uploadId/complete')
   async completeUpload(
     @Param('uploadId') uploadId: string,
+    @Body() dto: CompleteUploadDto,
     @CurrentUserId() userId: string,
   ): Promise<SerializedMediaFile> {
-    return this.uploadsService.completeUpload(uploadId, userId);
+    return this.uploadsService.completeUpload(
+      uploadId,
+      userId,
+      dto.thumbnailUploaded,
+    );
   }
 }
 

@@ -50,6 +50,7 @@ export interface PresignedUploadResponse {
   uploadId: string;
   fileId: string;
   uploadUrl: string;
+  thumbnailUploadUrl?: string;
   s3Key: string;
   expiresAt: string;
 }
@@ -143,6 +144,24 @@ export class UploadsService {
       { expiresIn: PRESIGN_TTL_SECONDS },
     );
 
+    // When the client uploads its own thumbnail, presign a second PUT to the
+    // same key the server-side fallback would use, and persist that key now so
+    // the fallback stays gated off for this file (see completeUpload).
+    let thumbnailS3Key: string | null = null;
+    let thumbnailUploadUrl: string | undefined;
+    if (dto.hasThumbnail === true) {
+      thumbnailS3Key = this.thumbnailService.deriveThumbnailS3Key(s3Key);
+      thumbnailUploadUrl = await getSignedUrl(
+        this.s3Client,
+        new PutObjectCommand({
+          Bucket: this.bucketName,
+          Key: thumbnailS3Key,
+          ContentType: 'image/jpeg',
+        }),
+        { expiresIn: PRESIGN_TTL_SECONDS },
+      );
+    }
+
     const expiresAt: Date = new Date(Date.now() + PRESIGN_TTL_SECONDS * 1000);
     const fileType: FileType = this.fileTypeFromMimeType(dto.mimeType);
     const source: FileSource = this.fileSourceFromDto(dto.source);
@@ -162,6 +181,7 @@ export class UploadsService {
             fileType,
             source,
             uploadStatus: UploadStatus.PENDING,
+            thumbnailS3Key,
           },
         });
         const uploadJob = await tx.uploadJob.create({
@@ -180,6 +200,7 @@ export class UploadsService {
       uploadId: uploadJob.id,
       fileId: mediaFile.id,
       uploadUrl,
+      thumbnailUploadUrl,
       s3Key,
       expiresAt: uploadJob.expiresAt.toISOString(),
     };
@@ -188,6 +209,7 @@ export class UploadsService {
   async completeUpload(
     uploadId: string,
     userId: string,
+    thumbnailUploaded?: boolean,
   ): Promise<SerializedMediaFile> {
     const job = await this.prisma.uploadJob.findUnique({
       where: { id: uploadId },
@@ -209,6 +231,10 @@ export class UploadsService {
       return this.serializeMediaFile(file);
     }
 
+    // A client that set hasThumbnail but whose thumbnail PUT failed reports
+    // thumbnailUploaded=false; clear the pre-set key so the fallback runs.
+    const thumbnailUploadFailed: boolean = thumbnailUploaded === false;
+
     await this.prisma.$transaction(async (tx) => {
       await tx.uploadJob.update({
         where: { id: uploadId },
@@ -216,11 +242,21 @@ export class UploadsService {
       });
       await tx.mediaFile.update({
         where: { id: file.id },
-        data: { uploadStatus: UploadStatus.UPLOADED },
+        data: {
+          uploadStatus: UploadStatus.UPLOADED,
+          ...(thumbnailUploadFailed ? { thumbnailS3Key: null } : {}),
+        },
       });
     });
 
-    await this.thumbnailService.generateThumbnailForFile(file.id);
+    // Hard gate: the server-side fallback runs only when no thumbnail key is
+    // set at this point, so it can never overwrite a client-uploaded thumbnail.
+    const thumbnailS3KeyAfter: string | null = thumbnailUploadFailed
+      ? null
+      : file.thumbnailS3Key;
+    if (thumbnailS3KeyAfter === null) {
+      await this.thumbnailService.generateThumbnailForFile(file.id);
+    }
 
     const refreshed = await this.prisma.mediaFile.findUnique({
       where: { id: file.id },

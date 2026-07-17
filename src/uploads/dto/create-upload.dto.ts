@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsEnum,
   IsNumber,
   IsOptional,
@@ -35,4 +36,8 @@ export class CreateUploadDto {
 
   @IsEnum(UploadSource)
   source!: UploadSource;
+
+  @IsOptional()
+  @IsBoolean()
+  hasThumbnail?: boolean;
 }
