@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Folder, FolderType, Prisma, UploadStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { UploadsService } from '../uploads/uploads.service';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { UpdateFolderDto } from './dto/update-folder.dto';
 
@@ -20,7 +21,10 @@ export type FolderWithFiles = Prisma.FolderGetPayload<{
 
 @Injectable()
 export class FoldersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly uploadsService: UploadsService,
+  ) {}
 
   async createFolder(userId: string, dto: CreateFolderDto): Promise<Folder> {
     if (dto.parentFolderId !== undefined) {
@@ -109,13 +113,6 @@ export class FoldersService {
   async deleteFolder(folderId: string, userId: string): Promise<void> {
     const folder = await this.prisma.folder.findUnique({
       where: { id: folderId },
-      include: {
-        _count: {
-          select: {
-            files: { where: { uploadStatus: UploadStatus.UPLOADED } },
-          },
-        },
-      },
     });
     if (folder === null) {
       throw new NotFoundException('Folder not found');
@@ -126,16 +123,41 @@ export class FoldersService {
     if (folder.isSystem) {
       throw new BadRequestException('System folders cannot be deleted');
     }
-    if (folder._count.files > 0) {
-      throw new ConflictException('Folder is not empty');
+
+    // Agency folders are tenant-scoped: their files must never be swept into
+    // the owner's personal Unfiled folder. Block deletion while non-empty
+    // (counting ALL files, ghosts included) so the DB-level ON DELETE SET NULL
+    // can't silently orphan agency files.
+    if (folder.agencyId !== null) {
+      const fileCount = await this.prisma.mediaFile.count({
+        where: { folderId },
+      });
+      if (fileCount > 0) {
+        throw new ConflictException(
+          'Folder contains files. Move or delete them before deleting the folder.',
+        );
+      }
+      await this.prisma.folder.delete({ where: { id: folderId } });
+      return;
     }
 
-    // Any files still referencing the folder are non-UPLOADED ghosts; detach
-    // them (keep the rows) so the folder can be deleted.
+    // Personal folder: sweep every contained file (UPLOADED and non-UPLOADED
+    // ghosts alike) into the owner's system Unfiled folder so nothing is
+    // orphaned to folderId = null. Resolve the Unfiled id BEFORE opening the
+    // transaction — the helper's create/catch-P2002/refetch pattern can't run
+    // inside a Postgres transaction, where a failed insert aborts the whole tx.
+    const unfiledFolderId =
+      await this.uploadsService.findOrCreateUnfiledFolder(userId);
+    if (unfiledFolderId === folderId) {
+      // Unreachable given the isSystem guard above (Unfiled is isSystem=true),
+      // but assert rather than sweep a folder into itself.
+      throw new BadRequestException('Cannot delete the Unfiled folder');
+    }
+
     await this.prisma.$transaction(async (tx) => {
       await tx.mediaFile.updateMany({
         where: { folderId },
-        data: { folderId: null },
+        data: { folderId: unfiledFolderId },
       });
       await tx.folder.delete({
         where: { id: folderId },

@@ -27,6 +27,7 @@ enum FolderType {
 enum FileSource {
   CAMERA
   GALLERY
+  PIPELINE
 }
 
 enum FileType {
@@ -206,4 +207,15 @@ model PipelineJob {
   @@index([agencyId])
   @@index([status])
   @@index([createdAt(sort: Desc)])
+}
+
+model PipelineDelivery {
+  id        String   @id @default(uuid())
+  jobId     String
+  clipId    String
+  fileId    String   // delivered MediaFile
+  folderId  String
+  createdAt DateTime @default(now())
+
+  @@unique([jobId, clipId, folderId])
 }
