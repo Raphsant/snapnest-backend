@@ -23,6 +23,7 @@ import {
 } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
 import { AgencyService } from '../agency/agency.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUploadDto, UploadSource } from './dto/create-upload.dto';
 import { ThumbnailService } from './thumbnail.service';
@@ -93,6 +94,7 @@ export class UploadsService {
     private readonly prisma: PrismaService,
     private readonly thumbnailService: ThumbnailService,
     private readonly agencyService: AgencyService,
+    private readonly notificationsService: NotificationsService,
   ) {
     const region: string = this.configService.get<string>('AWS_REGION', '');
     const accessKeyId: string = this.configService.get<string>(
@@ -257,6 +259,28 @@ export class UploadsService {
         },
       });
     });
+
+    // Fire-and-forget push on the fresh-completion path only. The idempotent
+    // short-circuit above already returned for already-completed jobs, so this
+    // cannot double-fire. VIDEO only for v1; PHOTO uploads get no notification.
+    // sendToUser never throws, but we still void + .catch so a push failure can
+    // never delay or fail the completion response.
+    if (file.fileType === FileType.VIDEO) {
+      void this.notificationsService
+        .sendToUser(
+          file.ownerId,
+          'Upload complete',
+          `${file.fileName} is safely in your cloud`,
+          { fileId: file.id },
+        )
+        .catch((error: unknown) => {
+          this.logger.error(
+            `[push] upload-complete notification failed for file ${file.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+    }
 
     // Hard gate: the server-side fallback runs only when no thumbnail key is
     // set at this point, so it can never overwrite a client-uploaded thumbnail.

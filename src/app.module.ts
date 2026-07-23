@@ -5,6 +5,7 @@ import { AgencyModule } from './agency/agency.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { FoldersModule } from './folders/folders.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { UploadsModule } from './uploads/uploads.module';
@@ -20,6 +21,7 @@ import { UsersModule } from './users/users.module';
     AgencyModule,
     AdminModule,
     PipelineModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

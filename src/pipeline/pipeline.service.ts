@@ -28,6 +28,7 @@ import {
   UploadStatus,
 } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ThumbnailService } from '../uploads/thumbnail.service';
 import { ApprovePipelineJobDto } from './dto/approve-pipeline-job.dto';
@@ -147,6 +148,7 @@ export class PipelineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly thumbnailService: ThumbnailService,
+    private readonly notificationsService: NotificationsService,
     configService: ConfigService,
   ) {
     const region = configService.getOrThrow<string>('AWS_REGION');
@@ -632,6 +634,24 @@ export class PipelineService {
     // (ThumbnailService generates for PHOTO only), so the delivered clip keeps
     // thumbnailS3Key = null; wired for parity and future support.
     await this.thumbnailService.generateThumbnailForFile(fileId);
+
+    // Fire-and-forget push to the destination folder's owner (the agency client
+    // who receives the delivered clip). sendToUser never throws, but we still
+    // void + .catch so a push failure can never delay or fail delivery.
+    void this.notificationsService
+      .sendToUser(
+        folder.ownerId,
+        'New content ready',
+        `A new clip was delivered to ${folder.name}`,
+        { fileId, folderId },
+      )
+      .catch((error: unknown) => {
+        this.logger.error(
+          `[push] clip-delivery notification failed for file ${fileId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
 
     return { fileId, folderId };
   }

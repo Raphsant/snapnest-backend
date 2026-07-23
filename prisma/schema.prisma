@@ -89,6 +89,7 @@ model User {
   uploadJobs   UploadJob[]
   pipelineJobs PipelineJob[]
   memberships  AgencyMembership[]
+  pushTokens   PushToken[]
 
   @@index([cognitoSub])
 }
@@ -218,4 +219,17 @@ model PipelineDelivery {
   createdAt DateTime @default(now())
 
   @@unique([jobId, clipId, folderId])
+}
+
+model PushToken {
+  id         String   @id @default(uuid())
+  userId     String
+  token      String   @unique
+  platform   String
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
