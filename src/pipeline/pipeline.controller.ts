@@ -14,6 +14,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
 import { ApprovePipelineJobDto } from './dto/approve-pipeline-job.dto';
 import { CreatePipelineJobDto } from './dto/create-pipeline-job.dto';
+import { CreateYoutubePipelineJobDto } from './dto/create-youtube-pipeline-job.dto';
 import { DeliverClipDto } from './dto/deliver-clip.dto';
 import {
   DeliverClipResult,
@@ -34,6 +35,14 @@ export class PipelineController {
     @CurrentUserId() requestedById: string,
   ): Promise<PipelineJob> {
     return this.pipelineService.createJob(dto, requestedById);
+  }
+
+  @Post('jobs/youtube')
+  createYoutubeJob(
+    @Body() dto: CreateYoutubePipelineJobDto,
+    @CurrentUserId() requestedById: string,
+  ): Promise<PipelineJob> {
+    return this.pipelineService.createYoutubeJob(dto, requestedById);
   }
 
   @Post('jobs/:id/approve')

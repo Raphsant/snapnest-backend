@@ -25,6 +25,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { AgencyService } from '../agency/agency.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { BatchDeleteFilesDto } from './dto/batch-delete-files.dto';
+import { BatchMoveFilesDto } from './dto/batch-move-files.dto';
 import { CreateUploadDto, UploadSource } from './dto/create-upload.dto';
 import { ThumbnailService } from './thumbnail.service';
 
@@ -51,6 +53,7 @@ const mediaFileFolderInclude = {
 export interface PresignedUploadResponse {
   uploadId: string;
   fileId: string;
+  displayName: string | null;
   uploadUrl: string;
   thumbnailUploadUrl?: string;
   s3Key: string;
@@ -81,6 +84,16 @@ export interface BatchFileViewUrlItem {
 export interface DeleteFileResult {
   success: true;
   deletedFileId: string;
+}
+
+export interface BatchMoveResult {
+  movedCount: number;
+  skippedIds: string[];
+}
+
+export interface BatchDeleteResult {
+  deletedCount: number;
+  skippedIds: string[];
 }
 
 @Injectable()
@@ -180,12 +193,31 @@ export class UploadsService {
 
     const { mediaFile, uploadJob } = await this.prisma.$transaction(
       async (tx) => {
+        // Assign a human-readable capture name from a per-folder counter.
+        // Single atomic UPDATE..RETURNING — safe under concurrent captures to
+        // the same folder: the folder row is locked for the transaction, so
+        // parallel captures serialize into distinct sequence numbers. Cancelled
+        // or failed uploads may leave gaps in the sequence — acceptable. The
+        // name is assigned once here and never recomputed on move or rename.
+        // Uploads with no destination folder (agency uploads without a folder)
+        // get no displayName.
+        let displayName: string | null = null;
+        if (resolvedFolderId !== null) {
+          const folder = await tx.folder.update({
+            where: { id: resolvedFolderId },
+            data: { captureSeq: { increment: 1 } },
+            select: { captureSeq: true, name: true },
+          });
+          displayName = `${folder.name} ${String(folder.captureSeq).padStart(2, '0')}`;
+        }
+
         const mediaFile = await tx.mediaFile.create({
           data: {
             ownerId: userId,
             agencyId: dto.agencyId ?? null,
             folderId: resolvedFolderId,
             fileName: dto.fileName,
+            displayName,
             mimeType: dto.mimeType,
             sizeBytes,
             s3Key,
@@ -210,6 +242,7 @@ export class UploadsService {
     return {
       uploadId: uploadJob.id,
       fileId: mediaFile.id,
+      displayName: mediaFile.displayName,
       uploadUrl,
       thumbnailUploadUrl,
       s3Key,
@@ -429,6 +462,59 @@ export class UploadsService {
   }
 
   /**
+   * Moves many of the caller's own personal files into a single destination in
+   * one transaction. Partial success by design: ids that don't exist, aren't
+   * owned by the caller, or belong to an agency are returned in skippedIds
+   * rather than failing the whole batch. A bad *target* folder, by contrast,
+   * fails the whole request (it's one shared param, not a per-file skip).
+   * displayName is never recomputed (naming is capture-time — see
+   * createPresignedUploadUrl).
+   */
+  async batchMoveFiles(
+    userId: string,
+    dto: BatchMoveFilesDto,
+  ): Promise<BatchMoveResult> {
+    // Dedup so a repeated id can't be counted in both moved and skipped.
+    const requestedIds: string[] = [...new Set(dto.fileIds)];
+
+    // Resolve the destination once, before the transaction. 'none' maps to the
+    // caller's Unfiled folder via the same race-safe helper the folder-delete
+    // sweep uses (its create/catch-P2002/refetch can't run inside a PG tx). An
+    // explicit target must be owned by the caller, else the whole request
+    // 404s/403s — matching the single-file move contract.
+    let targetFolderId: string;
+    if (dto.targetFolderId === UNFILED_FOLDER_QUERY) {
+      targetFolderId = await this.findOrCreateUnfiledFolder(userId);
+    } else {
+      await this.assertFolderOwnedByUser(dto.targetFolderId, userId);
+      targetFolderId = dto.targetFolderId;
+    }
+
+    // Only the caller's own personal files move. agencyId = null keeps tenant-
+    // scoped agency files out; their ids land in skippedIds like any non-owned
+    // id.
+    const movedIds: string[] = await this.prisma.$transaction(async (tx) => {
+      const eligible = await tx.mediaFile.findMany({
+        where: { id: { in: requestedIds }, ownerId: userId, agencyId: null },
+        select: { id: true },
+      });
+      const ids: string[] = eligible.map((file) => file.id);
+      if (ids.length > 0) {
+        await tx.mediaFile.updateMany({
+          where: { id: { in: ids }, ownerId: userId, agencyId: null },
+          data: { folderId: targetFolderId },
+        });
+      }
+      return ids;
+    });
+
+    const movedSet = new Set(movedIds);
+    const skippedIds: string[] = requestedIds.filter((id) => !movedSet.has(id));
+
+    return { movedCount: movedIds.length, skippedIds };
+  }
+
+  /**
    * Permanently deletes the cloud copy (S3 + DB). Does not affect the user's device camera roll.
    * UploadJob is removed via onDelete: Cascade when MediaFile is deleted.
    */
@@ -456,6 +542,51 @@ export class UploadsService {
     });
 
     return { success: true, deletedFileId: fileId };
+  }
+
+  /**
+   * Deletes many of the caller's own personal files. Same ownership/tenant gate
+   * and partial-success (skippedIds) semantics as batchMoveFiles. Reuses the
+   * single-file deletion model exactly (hard delete + best-effort S3 cleanup of
+   * object and thumbnail); the only difference is ordering — all DB rows are
+   * removed first (atomic deleteMany, UploadJob cascades), then S3 cleanup runs
+   * post-commit so a failed S3 delete can never roll back the DB.
+   */
+  async batchDeleteFiles(
+    userId: string,
+    dto: BatchDeleteFilesDto,
+  ): Promise<BatchDeleteResult> {
+    const requestedIds: string[] = [...new Set(dto.fileIds)];
+
+    // Capture s3 keys before the rows are gone; scope to the caller's own
+    // personal files (agency files are skipped, matching single-file delete).
+    const deletable = await this.prisma.mediaFile.findMany({
+      where: { id: { in: requestedIds }, ownerId: userId, agencyId: null },
+      select: { id: true, s3Key: true, thumbnailS3Key: true },
+    });
+    const deletableIds: string[] = deletable.map((file) => file.id);
+
+    if (deletableIds.length > 0) {
+      // A single deleteMany is itself atomic (UploadJob rows cascade). S3
+      // cleanup runs only after it commits — never inside a tx S3 could abort.
+      await this.prisma.mediaFile.deleteMany({
+        where: { id: { in: deletableIds } },
+      });
+
+      for (const file of deletable) {
+        await this.deleteS3ObjectBestEffort(file.s3Key);
+        if (file.thumbnailS3Key !== null) {
+          await this.deleteS3ObjectBestEffort(file.thumbnailS3Key);
+        }
+      }
+    }
+
+    const deletableSet = new Set(deletableIds);
+    const skippedIds: string[] = requestedIds.filter(
+      (id) => !deletableSet.has(id),
+    );
+
+    return { deletedCount: deletableIds.length, skippedIds };
   }
 
   private async deleteS3ObjectBestEffort(s3Key: string): Promise<void> {

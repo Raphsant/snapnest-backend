@@ -24,6 +24,7 @@ import {
   PipelineDelivery,
   PipelineJob,
   PipelineJobStatus,
+  PipelineSourceType,
   Prisma,
   UploadStatus,
 } from '@prisma/client';
@@ -33,6 +34,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ThumbnailService } from '../uploads/thumbnail.service';
 import { ApprovePipelineJobDto } from './dto/approve-pipeline-job.dto';
 import { CreatePipelineJobDto } from './dto/create-pipeline-job.dto';
+import { CreateYoutubePipelineJobDto } from './dto/create-youtube-pipeline-job.dto';
 import { DeliverClipDto } from './dto/deliver-clip.dto';
 
 type ManifestClip = Prisma.JsonObject & {
@@ -137,6 +139,64 @@ const CLIP_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 /** Presigned GET lifetime for assembled-clip outputs. */
 const OUTPUT_URL_TTL_SECONDS = 15 * 60;
 
+/** Hostnames accepted for a YouTube-sourced pipeline job. */
+const YOUTUBE_HOSTS = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'youtu.be',
+]);
+
+/** A YouTube video id is exactly 11 characters of this charset. */
+const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
+
+/** Pulls the video id out of the supported YouTube URL shapes, or null. */
+function extractYoutubeVideoId(host: string, url: URL): string | null {
+  // youtu.be/<id>
+  if (host === 'youtu.be') {
+    return url.pathname.split('/').filter(Boolean)[0] ?? null;
+  }
+  // youtube.com/watch?v=<id>
+  if (url.pathname === '/watch') {
+    return url.searchParams.get('v');
+  }
+  // youtube.com/{shorts,embed,live,v}/<id>
+  const segments = url.pathname.split('/').filter(Boolean);
+  if (segments.length >= 2 && ['shorts', 'embed', 'live', 'v'].includes(segments[0])) {
+    return segments[1];
+  }
+  return null;
+}
+
+/**
+ * Validates a client-supplied YouTube URL and returns its canonical form
+ * (https://www.youtube.com/watch?v=<id>). Throws BadRequestException for
+ * anything that isn't https, isn't a recognized YouTube host, or has no
+ * extractable 11-character video id.
+ */
+function normalizeYoutubeUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new BadRequestException('sourceUrl must be a valid URL');
+  }
+  if (url.protocol !== 'https:') {
+    throw new BadRequestException('sourceUrl must use https');
+  }
+  const host = url.hostname.toLowerCase();
+  if (!YOUTUBE_HOSTS.has(host)) {
+    throw new BadRequestException('sourceUrl must be a YouTube URL');
+  }
+  const videoId = extractYoutubeVideoId(host, url);
+  if (videoId === null || !YOUTUBE_VIDEO_ID_PATTERN.test(videoId)) {
+    throw new BadRequestException(
+      'sourceUrl does not contain a valid YouTube video id',
+    );
+  }
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
 @Injectable()
 export class PipelineService {
   private readonly logger = new Logger(PipelineService.name);
@@ -206,6 +266,58 @@ export class PipelineService {
         agencyId: file.agencyId,
         requestedById,
         status: PipelineJobStatus.QUEUED,
+      },
+    });
+
+    try {
+      await this.sendPipelineMessage(job.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return this.prisma.pipelineJob.update({
+        where: { id: job.id },
+        data: {
+          status: PipelineJobStatus.FAILED,
+          error: `SQS enqueue failed: ${message}`,
+        },
+      });
+    }
+
+    return job;
+  }
+
+  /**
+   * Creates a YouTube-sourced pipeline job. No MediaFile and no agency: the
+   * worker downloads the URL (currentStage "download") and fills sourceS3Key.
+   * Mirrors createJob's SQS-failure handling and return shape.
+   */
+  async createYoutubeJob(
+    dto: CreateYoutubePipelineJobDto,
+    requestedById: string,
+  ): Promise<PipelineJob> {
+    const sourceUrl = normalizeYoutubeUrl(dto.sourceUrl);
+
+    const existingActive = await this.prisma.pipelineJob.findFirst({
+      where: {
+        sourceUrl,
+        status: { notIn: TERMINAL_STATUSES },
+      },
+    });
+    if (existingActive !== null) {
+      throw new ConflictException({
+        message: `An active pipeline job already exists for ${sourceUrl}`,
+        jobId: existingActive.id,
+      });
+    }
+
+    const job = await this.prisma.pipelineJob.create({
+      data: {
+        sourceType: PipelineSourceType.YOUTUBE,
+        sourceFileId: null,
+        agencyId: null,
+        sourceUrl,
+        requestedById,
+        status: PipelineJobStatus.QUEUED,
+        currentStage: 'download',
       },
     });
 
@@ -527,6 +639,22 @@ export class PipelineService {
     });
     if (job === null) {
       throw new NotFoundException(`Pipeline job ${jobId} not found`);
+    }
+
+    // YouTube-sourced jobs have no MediaFile owner and no agency, so the
+    // destination-folder invariants below (folder.agencyId === job.agencyId,
+    // folder.ownerId === job.sourceFile.ownerId) would compare against
+    // null/undefined and either mismatch confusingly or match by accident.
+    // Refuse before any S3 or folder work. This also narrows job.sourceFile to
+    // non-null for the ownership check further down.
+    if (
+      job.sourceType === PipelineSourceType.YOUTUBE ||
+      job.sourceFileId === null ||
+      job.sourceFile === null
+    ) {
+      throw new BadRequestException(
+        "YouTube-sourced jobs don't support folder delivery yet.",
+      );
     }
 
     // Resolve the assembled clip deterministically and confirm it exists.

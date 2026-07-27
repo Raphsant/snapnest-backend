@@ -11,13 +11,17 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUserId } from '../auth/current-user.decorator';
+import { BatchDeleteFilesDto } from './dto/batch-delete-files.dto';
+import { BatchMoveFilesDto } from './dto/batch-move-files.dto';
 import { BatchViewUrlsDto } from './dto/batch-view-urls.dto';
 import { CompleteUploadDto } from './dto/complete-upload.dto';
 import { CreateUploadDto } from './dto/create-upload.dto';
 import { ListFilesQueryDto } from './dto/list-files-query.dto';
 import { MoveFileToFolderDto } from './dto/move-file-to-folder.dto';
 import {
+  BatchDeleteResult,
   BatchFileViewUrlItem,
+  BatchMoveResult,
   DeleteFileResult,
   FileViewUrlResponse,
   PresignedUploadResponse,
@@ -76,6 +80,22 @@ export class FilesController {
     @Body() dto: MoveFileToFolderDto,
   ): Promise<SerializedMediaFile> {
     return this.uploadsService.moveFileToFolder(userId, fileId, dto.folderId);
+  }
+
+  @Post('batch/move')
+  async batchMoveFiles(
+    @CurrentUserId() userId: string,
+    @Body() dto: BatchMoveFilesDto,
+  ): Promise<BatchMoveResult> {
+    return this.uploadsService.batchMoveFiles(userId, dto);
+  }
+
+  @Post('batch/delete')
+  async batchDeleteFiles(
+    @CurrentUserId() userId: string,
+    @Body() dto: BatchDeleteFilesDto,
+  ): Promise<BatchDeleteResult> {
+    return this.uploadsService.batchDeleteFiles(userId, dto);
   }
 
   @Delete(':fileId')

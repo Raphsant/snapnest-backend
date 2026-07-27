@@ -70,6 +70,11 @@ enum PipelineJobStatus {
   FAILED
 }
 
+enum PipelineSourceType {
+  FILE
+  YOUTUBE
+}
+
 enum AgencyRole {
   CLIENT
   STAFF
@@ -129,6 +134,7 @@ model Folder {
   name           String
   type           FolderType @default(PERSONAL)
   isSystem       Boolean    @default(false)
+  captureSeq     Int        @default(0)
   parentFolderId String?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
@@ -150,6 +156,7 @@ model MediaFile {
   agencyId       String?
   folderId       String?
   fileName       String
+  displayName    String?
   mimeType       String
   sizeBytes      BigInt
   s3Key          String       @unique
@@ -189,20 +196,23 @@ model UploadJob {
 }
 
 model PipelineJob {
-  id            String            @id @default(uuid())
-  sourceFileId  String
-  agencyId      String
+  id            String             @id @default(uuid())
+  sourceType    PipelineSourceType @default(FILE)
+  sourceFileId  String?
+  sourceUrl     String?
+  sourceS3Key   String?
+  agencyId      String?
   requestedById String
-  status        PipelineJobStatus @default(QUEUED)
+  status        PipelineJobStatus  @default(QUEUED)
   currentStage  String?
   error         String?
   manifest      Json?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
 
-  sourceFile  MediaFile @relation(fields: [sourceFileId], references: [id], onDelete: Cascade)
-  agency      Agency    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  requestedBy User      @relation(fields: [requestedById], references: [id], onDelete: Cascade)
+  sourceFile  MediaFile? @relation(fields: [sourceFileId], references: [id], onDelete: Cascade)
+  agency      Agency?    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  requestedBy User       @relation(fields: [requestedById], references: [id], onDelete: Cascade)
 
   @@index([sourceFileId])
   @@index([agencyId])
