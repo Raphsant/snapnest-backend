@@ -73,6 +73,14 @@ export class PipelineController {
     return this.pipelineService.getJobOutputs(id);
   }
 
+  @Get('jobs/:id/outputs/:clipId/download-url')
+  getOutputDownloadUrl(
+    @Param('id') id: string,
+    @Param('clipId') clipId: string,
+  ): Promise<{ url: string; fileName: string }> {
+    return this.pipelineService.getOutputDownloadUrl(id, clipId);
+  }
+
   @Post('jobs/:id/deliver')
   @HttpCode(HttpStatus.OK)
   deliverClip(

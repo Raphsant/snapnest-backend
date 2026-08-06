@@ -618,6 +618,51 @@ export class PipelineService {
   }
 
   /**
+   * Presigns a single assembled clip for download. Unlike getJobOutputs'
+   * inline-playback URLs, this forces a save via Content-Disposition with a
+   * stable filename. S3 presence is the source of truth for existence.
+   */
+  async getOutputDownloadUrl(
+    jobId: string,
+    clipId: string,
+  ): Promise<{ url: string; fileName: string }> {
+    const job = await this.prisma.pipelineJob.findUnique({
+      where: { id: jobId },
+      select: { id: true },
+    });
+    if (job === null) {
+      throw new NotFoundException(`Pipeline job ${jobId} not found`);
+    }
+
+    // clipId arrives from a URL param; never let an unvalidated value reach S3
+    // key construction (mirrors deliverClip's defense-in-depth check).
+    if (!CLIP_ID_PATTERN.test(clipId)) {
+      throw new BadRequestException('Invalid clipId');
+    }
+
+    const fileName = `final_${clipId}_9x16.mp4`;
+    const key = `pipeline/${jobId}/final/${fileName}`;
+
+    // S3 presence is the source of truth — do not consult the DB for existence.
+    if ((await this.headObjectSize(key)) === null) {
+      throw new NotFoundException('Output not found');
+    }
+
+    const url = await getSignedUrl(
+      this.s3Client,
+      new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        ResponseContentDisposition: `attachment; filename="${fileName}"`,
+        ResponseContentType: 'video/mp4',
+      }),
+      { expiresIn: OUTPUT_URL_TTL_SECONDS },
+    );
+
+    return { url, fileName };
+  }
+
+  /**
    * Copies an assembled clip into an agency client's folder as a normal-shaped
    * MediaFile, recording the delivery. All folder invariants are validated
    * server-side before any write.
