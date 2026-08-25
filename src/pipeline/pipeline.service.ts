@@ -40,8 +40,10 @@ import { DeliverClipDto } from './dto/deliver-clip.dto';
 type ManifestClip = Prisma.JsonObject & {
   id: string;
   approved: boolean | null;
-  hook_prompt?: string | null;
-  close_prompt?: string | null;
+  hook_asset_id?: string | null;
+  outro_asset_id?: string | null;
+  hook_text?: string | null;
+  close_text?: string | null;
   post_copy?: string | null;
 };
 
@@ -70,8 +72,10 @@ function isPipelineManifest(
       return false;
     }
     const creativeFields = [
-      clip.hook_prompt,
-      clip.close_prompt,
+      clip.hook_asset_id,
+      clip.outro_asset_id,
+      clip.hook_text,
+      clip.close_text,
       clip.post_copy,
     ];
     if (
@@ -90,6 +94,14 @@ function isPipelineManifest(
 
   return true;
 }
+
+const REQUIRED_CREATIVE_FIELDS = [
+  'hook_asset_id',
+  'outro_asset_id',
+  'hook_text',
+  'close_text',
+  'post_copy',
+] as const;
 
 const TERMINAL_STATUSES: PipelineJobStatus[] = [
   PipelineJobStatus.COMPLETED,
@@ -474,18 +486,22 @@ export class PipelineService {
       );
     }
 
-    const incompleteClipIds = job.manifest.clips
-      .filter(
-        (clip) =>
-          clip.approved === true &&
-          (!isNonEmptyString(clip.hook_prompt) ||
-            !isNonEmptyString(clip.close_prompt) ||
-            !isNonEmptyString(clip.post_copy)),
-      )
-      .map((clip) => clip.id);
-    if (incompleteClipIds.length > 0) {
+    const incompleteClips = job.manifest.clips
+      .filter((clip) => clip.approved === true)
+      .map((clip) => ({
+        id: clip.id,
+        missingFields: REQUIRED_CREATIVE_FIELDS.filter(
+          (field) => !isNonEmptyString(clip[field]),
+        ),
+      }))
+      .filter((clip) => clip.missingFields.length > 0);
+    if (incompleteClips.length > 0) {
       throw new ConflictException(
-        `creative fields incomplete for clip ids: ${incompleteClipIds.join(', ')}`,
+        `creative fields incomplete for clip ids: ${incompleteClips
+          .map(
+            (clip) => `${clip.id} (missing ${clip.missingFields.join(', ')})`,
+          )
+          .join('; ')}`,
       );
     }
 
