@@ -543,6 +543,45 @@ export class PipelineService {
     return this.getJob(jobId);
   }
 
+  async reopenJob(jobId: string): Promise<PipelineJob> {
+    const job = await this.prisma.pipelineJob.findUnique({
+      where: { id: jobId },
+    });
+    if (job === null) {
+      throw new NotFoundException(`Pipeline job ${jobId} not found`);
+    }
+    if (job.manifest === null || !isPipelineManifest(job.manifest)) {
+      throw new ConflictException(
+        `Pipeline job ${jobId} cannot be reopened without a valid manifest`,
+      );
+    }
+
+    const result = await this.prisma.pipelineJob.updateMany({
+      where: {
+        id: jobId,
+        status: PipelineJobStatus.COMPLETED,
+      },
+      data: {
+        status: PipelineJobStatus.AWAITING_MANIFEST_APPROVAL,
+        error: null,
+      },
+    });
+    if (result.count !== 1) {
+      const currentJob = await this.prisma.pipelineJob.findUnique({
+        where: { id: jobId },
+        select: { status: true },
+      });
+      if (currentJob === null) {
+        throw new NotFoundException(`Pipeline job ${jobId} not found`);
+      }
+      throw new ConflictException(
+        `Pipeline job ${jobId} cannot be reopened while its status is ${currentJob.status}`,
+      );
+    }
+
+    return this.getJob(jobId);
+  }
+
   listJobs(): Promise<PipelineJobListItem[]> {
     return this.prisma.pipelineJob.findMany({
       include: pipelineJobSourceFileInclude,

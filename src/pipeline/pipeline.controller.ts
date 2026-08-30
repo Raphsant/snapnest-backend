@@ -58,6 +58,11 @@ export class PipelineController {
     return this.pipelineService.approveCreative(id);
   }
 
+  @Post('jobs/:id/reopen')
+  reopenJob(@Param('id') id: string): Promise<PipelineJob> {
+    return this.pipelineService.reopenJob(id);
+  }
+
   @Get('jobs')
   listJobs(): Promise<PipelineJobListItem[]> {
     return this.pipelineService.listJobs();

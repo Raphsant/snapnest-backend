@@ -23,8 +23,10 @@ jest.mock('@aws-sdk/client-s3', () => ({
   ListObjectsV2Command: jest.fn(),
 }));
 
+const mockSqsSend = jest.fn().mockResolvedValue({});
+
 jest.mock('@aws-sdk/client-sqs', () => ({
-  SQSClient: jest.fn(() => ({ send: jest.fn().mockResolvedValue({}) })),
+  SQSClient: jest.fn(() => ({ send: mockSqsSend })),
   SendMessageCommand: jest.fn(),
 }));
 
@@ -47,14 +49,18 @@ describe('PipelineService', () => {
     post_copy: 'Post copy',
   };
 
-  const buildJob = (manifest: Prisma.JsonObject): PipelineJob =>
+  const buildJob = (
+    manifest: Prisma.JsonObject | null,
+    status: PipelineJobStatus = PipelineJobStatus.AWAITING_CREATIVE_APPROVAL,
+  ): PipelineJob =>
     ({
       id: 'job-1',
-      status: PipelineJobStatus.AWAITING_CREATIVE_APPROVAL,
+      status,
       manifest,
     }) as unknown as PipelineJob;
 
   beforeEach(() => {
+    mockSqsSend.mockClear();
     findUnique = jest.fn();
     updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
@@ -97,6 +103,55 @@ describe('PipelineService', () => {
         ),
       );
       expect(updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reopenJob', () => {
+    it('flips a COMPLETED job back to AWAITING_MANIFEST_APPROVAL and clears error', async () => {
+      const job = buildJob(
+        { clips: [completeClip] },
+        PipelineJobStatus.COMPLETED,
+      );
+      findUnique.mockResolvedValue(job);
+
+      await expect(service.reopenJob('job-1')).resolves.toBe(job);
+
+      expect(updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', status: PipelineJobStatus.COMPLETED },
+        data: {
+          status: PipelineJobStatus.AWAITING_MANIFEST_APPROVAL,
+          error: null,
+        },
+      });
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('409s when the job is not COMPLETED', async () => {
+      findUnique
+        .mockResolvedValueOnce(
+          buildJob({ clips: [completeClip] }, PipelineJobStatus.RUNNING),
+        )
+        .mockResolvedValueOnce({ status: PipelineJobStatus.RUNNING });
+      updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.reopenJob('job-1')).rejects.toThrow(
+        new ConflictException(
+          'Pipeline job job-1 cannot be reopened while its status is RUNNING',
+        ),
+      );
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
+
+    it('409s when the manifest is null', async () => {
+      findUnique.mockResolvedValue(buildJob(null, PipelineJobStatus.COMPLETED));
+
+      await expect(service.reopenJob('job-1')).rejects.toThrow(
+        new ConflictException(
+          'Pipeline job job-1 cannot be reopened without a valid manifest',
+        ),
+      );
+      expect(updateMany).not.toHaveBeenCalled();
+      expect(mockSqsSend).not.toHaveBeenCalled();
     });
   });
 });
