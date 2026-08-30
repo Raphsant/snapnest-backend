@@ -231,6 +231,26 @@ model PipelineDelivery {
   @@unique([jobId, clipId, folderId])
 }
 
+/// Marks an assembled pipeline output as published to social.
+///
+/// Keyed on (jobId, clipId) — the output itself — not on PipelineDelivery,
+/// because one clip may be delivered to several folders and "posted" is a
+/// property of the creative, not of any one delivery. Row presence IS the
+/// posted state: clearing deletes the row, so there is no null-vs-missing
+/// ambiguity. Outputs live only in S3, so nothing here is a foreign key —
+/// same shape as PipelineDelivery above.
+model PipelineOutputPost {
+  id        String   @id @default(uuid())
+  jobId     String
+  clipId    String
+  postedAt  DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([jobId, clipId])
+  @@index([postedAt])
+}
+
 model PushToken {
   id         String   @id @default(uuid())
   userId     String

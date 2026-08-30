@@ -36,6 +36,8 @@ import { ApprovePipelineJobDto } from './dto/approve-pipeline-job.dto';
 import { CreatePipelineJobDto } from './dto/create-pipeline-job.dto';
 import { CreateYoutubePipelineJobDto } from './dto/create-youtube-pipeline-job.dto';
 import { DeliverClipDto } from './dto/deliver-clip.dto';
+import { ListOutputsQueryDto } from './dto/list-outputs-query.dto';
+import { SetOutputPostedDto } from './dto/set-output-posted.dto';
 
 type ManifestClip = Prisma.JsonObject & {
   id: string;
@@ -95,6 +97,38 @@ function isPipelineManifest(
   return true;
 }
 
+/**
+ * The worker writes `{ s3Key, completedAt }` into manifest.clips[].assembled
+ * once a final clip is uploaded, which makes the manifest a DB-side record of
+ * every assembled output — no ListObjectsV2 needed to enumerate them.
+ *
+ * Returns null for any clip whose checkpoint is absent or malformed: such a
+ * clip is simply not an output yet. This is never an error, because the
+ * manifest is written by a separate service and one bad entry must not take
+ * down a listing that spans every job. s3Key is the validity gate; a missing
+ * or unparseable completedAt still yields an output, just an undated one.
+ */
+function parseAssembledCheckpoint(
+  clip: ManifestClip,
+): { completedAt: string | null } | null {
+  const raw = clip.assembled;
+  if (raw === undefined || !isJsonObject(raw)) {
+    return null;
+  }
+  const s3Key = raw.s3Key;
+  if (typeof s3Key !== 'string' || s3Key.trim().length === 0) {
+    return null;
+  }
+  const rawCompletedAt = raw.completedAt;
+  const completedAt =
+    typeof rawCompletedAt === 'string' &&
+    !Number.isNaN(Date.parse(rawCompletedAt))
+      ? new Date(rawCompletedAt).toISOString()
+      : null;
+
+  return { completedAt };
+}
+
 const REQUIRED_CREATIVE_FIELDS = [
   'hook_asset_id',
   'outro_asset_id',
@@ -102,6 +136,16 @@ const REQUIRED_CREATIVE_FIELDS = [
   'close_text',
   'post_copy',
 ] as const;
+
+/**
+ * Cap on how many clips a single job may approve. This mirrors the size of the
+ * hook/outro asset-library pool: the creative stage draws one hook and one
+ * outro per approved clip and never repeats an asset within a job, so a job
+ * with more approved clips than the pool holds cannot be filled. Rejecting at
+ * the approval gate keeps that failure in the dashboard instead of surfacing
+ * it mid-run from the worker.
+ */
+const MAX_APPROVED_CLIPS_PER_JOB = 10;
 
 const TERMINAL_STATUSES: PipelineJobStatus[] = [
   PipelineJobStatus.COMPLETED,
@@ -131,6 +175,33 @@ export interface PipelineJobOutput {
   sizeBytes: number;
   presignedUrl: string;
   deliveries: PipelineDelivery[];
+  /** ISO timestamp when this output was marked posted to social, else null. */
+  postedAt: string | null;
+}
+
+/**
+ * One row of the cross-job outputs listing. Metadata only — deliberately no
+ * presignedUrl, so a wide listing never fans out into per-row S3 signing.
+ * sizeBytes is absent for the same reason: the assemble checkpoint records no
+ * size, so it would cost one HeadObject per row. Playback and size stay on
+ * GET /admin/pipeline/jobs/:id/outputs.
+ */
+export interface PipelineOutputListItem {
+  jobId: string;
+  clipId: string;
+  postedAt: string | null;
+  /** From the assemble checkpoint; null when absent or unparseable. */
+  completedAt: string | null;
+  /** Parent job's createdAt — also the sort fallback when completedAt is null. */
+  jobCreatedAt: string;
+}
+
+export interface PipelineOutputListResult {
+  items: PipelineOutputListItem[];
+  /** Matches before limit/offset, so the caller knows whether more remain. */
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface DeliverClipResult {
@@ -150,6 +221,9 @@ const CLIP_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 /** Presigned GET lifetime for assembled-clip outputs. */
 const OUTPUT_URL_TTL_SECONDS = 15 * 60;
+
+/** Page size for the cross-job outputs listing when the caller sends none. */
+const DEFAULT_OUTPUTS_PAGE_SIZE = 50;
 
 /** Hostnames accepted for a YouTube-sourced pipeline job. */
 const YOUTUBE_HOSTS = new Set([
@@ -409,6 +483,15 @@ export class PipelineService {
       throw new BadRequestException('at least one clip must be approved');
     }
 
+    const approvedCount = dto.approvals.filter(
+      (decision) => decision.approved,
+    ).length;
+    if (approvedCount > MAX_APPROVED_CLIPS_PER_JOB) {
+      throw new ConflictException(
+        `at most ${MAX_APPROVED_CLIPS_PER_JOB} clips can be approved per job; got ${approvedCount}`,
+      );
+    }
+
     const updatedClips = job.manifest.clips.map((clip) => {
       const approved = approvalsByClipId.get(clip.id);
       if (approved === undefined) {
@@ -655,6 +738,13 @@ export class PipelineService {
       }
     }
 
+    const posts = await this.prisma.pipelineOutputPost.findMany({
+      where: { jobId },
+    });
+    const postedAtByClipId = new Map(
+      posts.map((post) => [post.clipId, post.postedAt]),
+    );
+
     const outputs: PipelineJobOutput[] = [];
     for (const item of parsed) {
       const presignedUrl = await this.presignGetUrl(
@@ -667,6 +757,7 @@ export class PipelineService {
         sizeBytes: item.sizeBytes,
         presignedUrl,
         deliveries: deliveriesByClipId.get(item.clipId) ?? [],
+        postedAt: postedAtByClipId.get(item.clipId)?.toISOString() ?? null,
       });
     }
     return outputs;
@@ -715,6 +806,144 @@ export class PipelineService {
     );
 
     return { url, fileName };
+  }
+
+  /**
+   * Shared guard for the posted-flag endpoints. The job must exist, the clipId
+   * must be key-safe (it reaches an S3 key), and the assembled output must
+   * actually be in S3 — the same source of truth getOutputDownloadUrl uses.
+   * Without the S3 check a typo'd clipId would write a row that no listing can
+   * ever surface and no toggle can ever clear.
+   */
+  private async assertOutputExists(
+    jobId: string,
+    clipId: string,
+  ): Promise<void> {
+    const job = await this.prisma.pipelineJob.findUnique({
+      where: { id: jobId },
+      select: { id: true },
+    });
+    if (job === null) {
+      throw new NotFoundException(`Pipeline job ${jobId} not found`);
+    }
+    if (!CLIP_ID_PATTERN.test(clipId)) {
+      throw new BadRequestException('Invalid clipId');
+    }
+    const key = `pipeline/${jobId}/final/final_${clipId}_9x16.mp4`;
+    if ((await this.headObjectSize(key)) === null) {
+      throw new NotFoundException('Output not found');
+    }
+  }
+
+  /**
+   * Marks an assembled output as posted to social. Idempotent: a second call
+   * updates the existing row's timestamp rather than creating a duplicate,
+   * which the (jobId, clipId) unique index would reject anyway.
+   */
+  async setOutputPosted(
+    jobId: string,
+    clipId: string,
+    dto: SetOutputPostedDto,
+  ): Promise<{ clipId: string; postedAt: string }> {
+    await this.assertOutputExists(jobId, clipId);
+
+    const postedAt =
+      dto.postedAt === undefined ? new Date() : new Date(dto.postedAt);
+    const record = await this.prisma.pipelineOutputPost.upsert({
+      where: { jobId_clipId: { jobId, clipId } },
+      create: { jobId, clipId, postedAt },
+      update: { postedAt },
+    });
+
+    return { clipId: record.clipId, postedAt: record.postedAt.toISOString() };
+  }
+
+  /**
+   * Clears the posted flag by deleting the row — row presence is the state.
+   * deleteMany, not delete, so clearing an already-unposted output is a no-op
+   * instead of a P2025: the endpoint stays idempotent under a double click.
+   */
+  async clearOutputPosted(jobId: string, clipId: string): Promise<void> {
+    await this.assertOutputExists(jobId, clipId);
+    await this.prisma.pipelineOutputPost.deleteMany({
+      where: { jobId, clipId },
+    });
+  }
+
+  /**
+   * Cross-job listing of assembled outputs, enumerated from the manifests the
+   * worker checkpoints into PipelineJob.manifest rather than from S3 — two
+   * queries total instead of one ListObjectsV2 per job. The posted flag is
+   * left-joined in memory; "unposted" is the absence of a row, which is why
+   * this cannot be answered from S3 alone.
+   */
+  async listOutputs(
+    query: ListOutputsQueryDto,
+  ): Promise<PipelineOutputListResult> {
+    const limit = query.limit ?? DEFAULT_OUTPUTS_PAGE_SIZE;
+    const offset = query.offset ?? 0;
+
+    const jobs = await this.prisma.pipelineJob.findMany({
+      select: { id: true, createdAt: true, manifest: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    const posts = await this.prisma.pipelineOutputPost.findMany();
+    const postedAtByKey = new Map(
+      posts.map((post) => [`${post.jobId}:${post.clipId}`, post.postedAt]),
+    );
+
+    const items: PipelineOutputListItem[] = [];
+    for (const job of jobs) {
+      if (job.manifest === null) {
+        // Queued job, nothing generated yet.
+        continue;
+      }
+      if (!isPipelineManifest(job.manifest)) {
+        // Written by the worker, so a shape this API can't read is possible.
+        // Skip the job and keep going — never fail the whole listing.
+        this.logger.warn(
+          `listOutputs: skipping job ${job.id} with an unreadable manifest`,
+        );
+        continue;
+      }
+
+      for (const clip of job.manifest.clips) {
+        const checkpoint = parseAssembledCheckpoint(clip);
+        if (checkpoint === null) {
+          continue;
+        }
+        const postedAt = postedAtByKey.get(`${job.id}:${clip.id}`);
+        items.push({
+          jobId: job.id,
+          clipId: clip.id,
+          postedAt: postedAt === undefined ? null : postedAt.toISOString(),
+          completedAt: checkpoint.completedAt,
+          jobCreatedAt: job.createdAt.toISOString(),
+        });
+      }
+    }
+
+    const filtered =
+      query.posted === undefined
+        ? items
+        : items.filter((item) => (item.postedAt !== null) === query.posted);
+
+    // Newest assembled first, falling back to the job's own createdAt for an
+    // output whose checkpoint carried no usable timestamp. clipId breaks ties
+    // so paging can't reorder rows between two requests.
+    filtered.sort((a, b) => {
+      const byTime =
+        Date.parse(b.completedAt ?? b.jobCreatedAt) -
+        Date.parse(a.completedAt ?? a.jobCreatedAt);
+      return byTime !== 0 ? byTime : a.clipId.localeCompare(b.clipId);
+    });
+
+    return {
+      items: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      limit,
+      offset,
+    };
   }
 
   /**

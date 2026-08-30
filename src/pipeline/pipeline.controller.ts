@@ -1,11 +1,14 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
   Param,
   Post,
+  Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { PipelineJob } from '@prisma/client';
@@ -16,11 +19,14 @@ import { ApprovePipelineJobDto } from './dto/approve-pipeline-job.dto';
 import { CreatePipelineJobDto } from './dto/create-pipeline-job.dto';
 import { CreateYoutubePipelineJobDto } from './dto/create-youtube-pipeline-job.dto';
 import { DeliverClipDto } from './dto/deliver-clip.dto';
+import { ListOutputsQueryDto } from './dto/list-outputs-query.dto';
+import { SetOutputPostedDto } from './dto/set-output-posted.dto';
 import {
   DeliverClipResult,
   PipelineJobDetail,
   PipelineJobListItem,
   PipelineJobOutput,
+  PipelineOutputListResult,
   PipelineService,
 } from './pipeline.service';
 
@@ -84,6 +90,35 @@ export class PipelineController {
     @Param('clipId') clipId: string,
   ): Promise<{ url: string; fileName: string }> {
     return this.pipelineService.getOutputDownloadUrl(id, clipId);
+  }
+
+  @Put('jobs/:id/outputs/:clipId/posted')
+  setOutputPosted(
+    @Param('id') id: string,
+    @Param('clipId') clipId: string,
+    @Body() dto: SetOutputPostedDto,
+  ): Promise<{ clipId: string; postedAt: string }> {
+    return this.pipelineService.setOutputPosted(id, clipId, dto);
+  }
+
+  @Delete('jobs/:id/outputs/:clipId/posted')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  clearOutputPosted(
+    @Param('id') id: string,
+    @Param('clipId') clipId: string,
+  ): Promise<void> {
+    return this.pipelineService.clearOutputPosted(id, clipId);
+  }
+
+  /**
+   * Cross-job outputs listing. Metadata only — no presigned URLs — so a wide
+   * listing stays one pair of queries. `posted` omitted means both.
+   */
+  @Get('outputs')
+  listOutputs(
+    @Query() query: ListOutputsQueryDto,
+  ): Promise<PipelineOutputListResult> {
+    return this.pipelineService.listOutputs(query);
   }
 
   @Post('jobs/:id/deliver')

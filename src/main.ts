@@ -57,7 +57,11 @@ async function bootstrap() {
 
   app.enableCors({
     origin: '*',
-    methods: ['GET', 'POST'],
+    // PUT/DELETE carry the posted-flag toggle on
+    // /admin/pipeline/jobs/:id/outputs/:clipId/posted. Both trigger a
+    // preflight because of the Authorization header, so omitting them here
+    // makes the dashboard toggle fail in the browser while curl still works.
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: '*',
   });
 
