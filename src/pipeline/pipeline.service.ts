@@ -248,7 +248,10 @@ function extractYoutubeVideoId(host: string, url: URL): string | null {
   }
   // youtube.com/{shorts,embed,live,v}/<id>
   const segments = url.pathname.split('/').filter(Boolean);
-  if (segments.length >= 2 && ['shorts', 'embed', 'live', 'v'].includes(segments[0])) {
+  if (
+    segments.length >= 2 &&
+    ['shorts', 'embed', 'live', 'v'].includes(segments[0])
+  ) {
     return segments[1];
   }
   return null;
@@ -459,9 +462,7 @@ export class PipelineService {
       approvalsByClipId.set(decision.clipId, decision.approved);
     }
 
-    const manifestClipIds = new Set(
-      job.manifest.clips.map((clip) => clip.id),
-    );
+    const manifestClipIds = new Set(job.manifest.clips.map((clip) => clip.id));
     const unknownClipIds = dto.approvals
       .map((decision) => decision.clipId)
       .filter((clipId) => !manifestClipIds.has(clipId));
@@ -479,13 +480,22 @@ export class PipelineService {
         `Missing approvals for clip ids: ${missingClipIds.join(', ')}`,
       );
     }
-    if (!dto.approvals.some((decision) => decision.approved)) {
-      throw new BadRequestException('at least one clip must be approved');
-    }
+
+    // Assembled clips are locked as approved: a reopened job must not un-approve delivered clips, and the gate UI defaults every clip to rejected.
+    const lockedClipIds = new Set(
+      job.manifest.clips
+        .filter(
+          (clip) => clip.assembled !== undefined && clip.assembled !== null,
+        )
+        .map((clip) => clip.id),
+    );
 
     const approvedCount = dto.approvals.filter(
-      (decision) => decision.approved,
+      (decision) => decision.approved && !lockedClipIds.has(decision.clipId),
     ).length;
+    if (approvedCount === 0) {
+      throw new BadRequestException('at least one clip must be approved');
+    }
     if (approvedCount > MAX_APPROVED_CLIPS_PER_JOB) {
       throw new ConflictException(
         `at most ${MAX_APPROVED_CLIPS_PER_JOB} clips can be approved per job; got ${approvedCount}`,
@@ -499,7 +509,10 @@ export class PipelineService {
           `Pipeline job ${jobId} approval validation failed`,
         );
       }
-      return { ...clip, approved };
+      return {
+        ...clip,
+        approved: lockedClipIds.has(clip.id) ? true : approved,
+      };
     });
     const updatedManifest: PipelineManifest = {
       ...job.manifest,
