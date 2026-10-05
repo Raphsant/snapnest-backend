@@ -7,6 +7,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -532,6 +533,16 @@ export class UploadsService {
       throw new ForbiddenException('Agency files cannot be deleted here');
     }
 
+    // IntakeAnswer.fileId is ON DELETE NO ACTION. Check before touching S3 so
+    // a blocked delete never removes the object.
+    const intakeAnswer = await this.prisma.intakeAnswer.findFirst({
+      where: { fileId },
+      select: { id: true },
+    });
+    if (intakeAnswer !== null) {
+      throw new ConflictException('File is used as an intake answer');
+    }
+
     await this.deleteS3ObjectBestEffort(file.s3Key);
     if (file.thumbnailS3Key !== null) {
       await this.deleteS3ObjectBestEffort(file.thumbnailS3Key);
@@ -565,6 +576,19 @@ export class UploadsService {
       select: { id: true, s3Key: true, thumbnailS3Key: true },
     });
     const deletableIds: string[] = deletable.map((file) => file.id);
+
+    // IntakeAnswer.fileId is ON DELETE NO ACTION: refuse the whole batch
+    // (before any S3 cleanup) rather than fail mid-way with a foreign-key 500.
+    const intakeAnswers = await this.prisma.intakeAnswer.findMany({
+      where: { fileId: { in: deletableIds } },
+      select: { fileId: true },
+    });
+    if (intakeAnswers.length > 0) {
+      const usedIds = [...new Set(intakeAnswers.map((a) => a.fileId))];
+      throw new ConflictException(
+        `File is used as an intake answer: ${usedIds.join(', ')}`,
+      );
+    }
 
     if (deletableIds.length > 0) {
       // A single deleteMany is itself atomic (UploadJob rows cascade). S3

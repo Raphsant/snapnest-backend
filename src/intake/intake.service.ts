@@ -201,23 +201,33 @@ export class IntakeService {
       throw new ForbiddenException('Intake step is locked');
     }
 
-    const existing = session.stepProgress.find((p) => p.stepId === stepId);
-    const watchedSeconds = Math.max(
-      existing?.watchedSeconds ?? 0,
-      dto.watchedSeconds,
-    );
-    const watchedAt =
-      existing?.watchedAt ??
-      (watchedSeconds >= step.explainerDurationSec - WATCHED_TOLERANCE_SECONDS
-        ? new Date()
-        : null);
-
     await this.prisma.$transaction(async (tx) => {
       await this.claimWritableSession(tx, session);
-      await tx.intakeStepProgress.upsert({
-        where: { sessionId_stepId: { sessionId: session.id, stepId } },
-        create: { sessionId: session.id, stepId, watchedSeconds, watchedAt },
-        update: { watchedSeconds, watchedAt },
+      // Create-if-missing as ON CONFLICT DO NOTHING: a caught P2002 would
+      // abort the surrounding Postgres transaction.
+      await tx.intakeStepProgress.createMany({
+        data: [{ sessionId: session.id, stepId, watchedSeconds: 0 }],
+        skipDuplicates: true,
+      });
+      // Monotonic in one statement: only ever raises watchedSeconds.
+      await tx.intakeStepProgress.updateMany({
+        where: {
+          sessionId: session.id,
+          stepId,
+          watchedSeconds: { lt: dto.watchedSeconds },
+        },
+        data: { watchedSeconds: dto.watchedSeconds },
+      });
+      await tx.intakeStepProgress.updateMany({
+        where: {
+          sessionId: session.id,
+          stepId,
+          watchedAt: null,
+          watchedSeconds: {
+            gte: step.explainerDurationSec - WATCHED_TOLERANCE_SECONDS,
+          },
+        },
+        data: { watchedAt: new Date() },
       });
     });
 
@@ -269,6 +279,18 @@ export class IntakeService {
 
     await this.prisma.$transaction(async (tx) => {
       await this.claimWritableSession(tx, session);
+      const reused = await tx.intakeAnswer.findFirst({
+        where: {
+          sessionId: session.id,
+          session: { agencyId },
+          fileId: file.id,
+          questionId: { not: questionId },
+        },
+        select: { id: true },
+      });
+      if (reused !== null) {
+        throw new ConflictException('File already used for another answer');
+      }
       await tx.intakeAnswer.upsert({
         where: {
           sessionId_questionId: { sessionId: session.id, questionId },
@@ -326,10 +348,31 @@ export class IntakeService {
       const incomplete = questionIds.filter(
         (id) => !uploadedQuestionIds.has(id),
       );
-      if (incomplete.length > 0) {
-        throw new ConflictException(
-          `Unanswered or not yet uploaded questions: ${incomplete.join(', ')}`,
-        );
+
+      const watched = await tx.intakeStepProgress.findMany({
+        where: {
+          sessionId: session.id,
+          session: { agencyId },
+          watchedAt: { not: null },
+        },
+        select: { stepId: true },
+      });
+      const watchedStepIds = new Set(watched.map((p) => p.stepId));
+      const unwatched = program.steps
+        .map((s) => s.id)
+        .filter((id) => !watchedStepIds.has(id));
+
+      if (incomplete.length > 0 || unwatched.length > 0) {
+        const problems: string[] = [];
+        if (unwatched.length > 0) {
+          problems.push(`Unwatched steps: ${unwatched.join(', ')}`);
+        }
+        if (incomplete.length > 0) {
+          problems.push(
+            `Unanswered or not yet uploaded questions: ${incomplete.join(', ')}`,
+          );
+        }
+        throw new ConflictException(problems.join('; '));
       }
     });
 

@@ -124,6 +124,16 @@ export class FoldersService {
       throw new BadRequestException('System folders cannot be deleted');
     }
 
+    // IntakeSession.answersFolderId is ON DELETE NO ACTION; surface it as a
+    // 409 instead of a foreign-key 500.
+    const intakeSession = await this.prisma.intakeSession.findFirst({
+      where: { answersFolderId: folderId },
+      select: { id: true },
+    });
+    if (intakeSession !== null) {
+      throw new ConflictException('Folder is used by an intake session');
+    }
+
     // Agency folders are tenant-scoped: their files must never be swept into
     // the owner's personal Unfiled folder. Block deletion while non-empty
     // (counting ALL files, ghosts included) so the DB-level ON DELETE SET NULL
