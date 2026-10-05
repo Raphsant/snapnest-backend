@@ -616,13 +616,16 @@ export class UploadsService {
     return { folderId };
   }
 
-  private async presignGetUrl(s3Key: string): Promise<string> {
+  async presignGetUrl(
+    s3Key: string,
+    expiresInSec: number = VIEW_URL_TTL_SECONDS,
+  ): Promise<string> {
     const getCommand = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: s3Key,
     });
     return getSignedUrl(this.s3Client, getCommand, {
-      expiresIn: VIEW_URL_TTL_SECONDS,
+      expiresIn: expiresInSec,
     });
   }
 
