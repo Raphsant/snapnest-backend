@@ -3,7 +3,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AgencyMembership, Prisma, UploadStatus } from '@prisma/client';
+import {
+  AgencyMembership,
+  AgencyRole,
+  MembershipStatus,
+  Prisma,
+  UploadStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 const agencyFileFolderInclude = {
@@ -39,8 +45,9 @@ export class AgencyService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Authorizes the user against an agency. Throws if no membership exists.
-   * This is the single gate every agency-scoped read/write must pass through.
+   * Authorizes the user against an agency. Throws unless an ACTIVE membership
+   * exists. This is the single gate every agency-scoped read/write must pass
+   * through.
    */
   async assertAgencyMembership(
     userId: string,
@@ -51,6 +58,24 @@ export class AgencyService {
     });
     if (membership === null) {
       throw new ForbiddenException('Agency not accessible');
+    }
+    if (membership.status !== MembershipStatus.ACTIVE) {
+      throw new ForbiddenException('Agency not accessible');
+    }
+    return membership;
+  }
+
+  /**
+   * Authorizes the user as STAFF of an agency. Passes the active-membership
+   * gate first, then requires the STAFF role.
+   */
+  async assertAgencyStaff(
+    userId: string,
+    agencyId: string,
+  ): Promise<AgencyMembership> {
+    const membership = await this.assertAgencyMembership(userId, agencyId);
+    if (membership.role !== AgencyRole.STAFF) {
+      throw new ForbiddenException('Agency staff access required');
     }
     return membership;
   }
