@@ -80,6 +80,19 @@ enum AgencyRole {
   STAFF
 }
 
+enum MembershipStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum IntakeSessionStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  SUBMITTED
+  PROCESSING
+  COMPLETE
+}
+
 model User {
   id          String      @id @default(uuid())
   cognitoSub  String      @unique
@@ -95,6 +108,8 @@ model User {
   pipelineJobs PipelineJob[]
   memberships  AgencyMembership[]
   pushTokens   PushToken[]
+  ndaAcceptances NdaAcceptance[]
+  intakeSessions IntakeSession[]
 
   @@index([cognitoSub])
 }
@@ -102,6 +117,8 @@ model User {
 model Agency {
   id        String   @id @default(uuid())
   name      String
+  ndaText    String?
+  ndaVersion String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -109,6 +126,9 @@ model Agency {
   folders      Folder[]
   files        MediaFile[]
   pipelineJobs PipelineJob[]
+  ndaAcceptances NdaAcceptance[]
+  intakePrograms IntakeProgram[]
+  intakeSessions IntakeSession[]
 }
 
 model AgencyMembership {
@@ -116,6 +136,7 @@ model AgencyMembership {
   agencyId  String
   userId    String
   role      AgencyRole @default(CLIENT)
+  status    MembershipStatus @default(ACTIVE)
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
@@ -125,6 +146,7 @@ model AgencyMembership {
   @@unique([agencyId, userId])
   @@index([userId])
   @@index([agencyId])
+  @@index([userId, status])
 }
 
 model Folder {
@@ -144,6 +166,7 @@ model Folder {
   parent   Folder?    @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: SetNull)
   children Folder[]   @relation("FolderHierarchy")
   files    MediaFile[]
+  intakeSessions IntakeSession[]
 
   @@index([ownerId])
   @@index([agencyId])
@@ -174,6 +197,7 @@ model MediaFile {
   folder    Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
   uploadJob    UploadJob?
   pipelineJobs PipelineJob[]
+  intakeAnswers IntakeAnswer[]
 
   @@index([ownerId])
   @@index([agencyId])
@@ -262,4 +286,124 @@ model PushToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+model NdaAcceptance {
+  id         String   @id @default(uuid())
+  agencyId   String
+  userId     String
+  version    String
+  fullName   String
+  acceptedAt DateTime
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([agencyId, userId, version])
+  @@index([userId])
+}
+
+model IntakeProgram {
+  id        String   @id @default(uuid())
+  agencyId  String
+  title     String
+  version   Int      @default(1)
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agency   Agency          @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  steps    IntakeStep[]
+  sessions IntakeSession[]
+
+  @@index([agencyId, isActive])
+}
+
+model IntakeStep {
+  id                   String   @id @default(uuid())
+  programId            String
+  order                Int
+  title                String
+  explainerS3Key       String
+  explainerDurationSec Int
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  program   IntakeProgram        @relation(fields: [programId], references: [id], onDelete: Cascade)
+  questions IntakeQuestion[]
+  progress  IntakeStepProgress[]
+
+  @@unique([programId, order])
+}
+
+model IntakeQuestion {
+  id             String   @id @default(uuid())
+  stepId         String
+  order          Int
+  prompt         String
+  maxDurationSec Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  step    IntakeStep     @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  answers IntakeAnswer[]
+
+  @@unique([stepId, order])
+}
+
+model IntakeSession {
+  id              String              @id @default(uuid())
+  programId       String
+  agencyId        String
+  userId          String
+  status          IntakeSessionStatus @default(NOT_STARTED)
+  answersFolderId String
+  submittedAt     DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  program       IntakeProgram @relation(fields: [programId], references: [id], onDelete: Restrict)
+  agency        Agency        @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answersFolder Folder        @relation(fields: [answersFolderId], references: [id], onDelete: NoAction)
+  stepProgress  IntakeStepProgress[]
+  answers       IntakeAnswer[]
+
+  @@unique([programId, userId])
+  @@index([agencyId, status])
+}
+
+model IntakeStepProgress {
+  id             String    @id @default(uuid())
+  sessionId      String
+  stepId         String
+  watchedSeconds Int       @default(0)
+  watchedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  session IntakeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  step    IntakeStep    @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, stepId])
+}
+
+model IntakeAnswer {
+  id         String   @id @default(uuid())
+  sessionId  String
+  questionId String
+  fileId     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  session  IntakeSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question IntakeQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  file     MediaFile      @relation(fields: [fileId], references: [id], onDelete: NoAction)
+
+  @@unique([sessionId, questionId])
+  @@index([fileId])
 }
