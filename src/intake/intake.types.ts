@@ -74,6 +74,25 @@ export interface IntakeSessionSummary {
   submittedAt: string | null;
   answeredCount: number;
   questionCount: number;
+  /** Answers whose linked pipeline job is COMPLETED. */
+  transcriptsReady: number;
+  /** Answers with a linked pipeline job. */
+  transcriptsTotal: number;
+}
+
+export type IntakeTranscriptStatus =
+  | 'none'
+  | 'queued'
+  | 'running'
+  | 'ready'
+  | 'failed';
+
+export interface IntakeTranscriptView {
+  status: IntakeTranscriptStatus;
+  /** Presigned GET of the job's transcript.srt, 1 hour expiry; set only when ready. */
+  srtUrl: string | null;
+  /** Job error; set only when failed. */
+  error: string | null;
 }
 
 export interface IntakeStaffAnswerView extends IntakeAnswerView {
@@ -81,6 +100,7 @@ export interface IntakeStaffAnswerView extends IntakeAnswerView {
   durationSeconds: number | null;
   /** Presigned GET; null when the file is not UPLOADED. */
   viewUrl: string | null;
+  transcript: IntakeTranscriptView;
 }
 
 export interface IntakeStaffSessionView extends Omit<

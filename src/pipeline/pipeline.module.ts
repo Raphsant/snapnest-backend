@@ -10,5 +10,6 @@ import { PipelineService } from './pipeline.service';
   imports: [AuthModule, NotificationsModule],
   controllers: [PipelineController],
   providers: [PipelineService, ThumbnailService, AdminGuard],
+  exports: [PipelineService],
 })
 export class PipelineModule {}

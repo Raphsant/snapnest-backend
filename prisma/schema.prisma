@@ -238,6 +238,8 @@ model PipelineJob {
   agency      Agency?    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
   requestedBy User       @relation(fields: [requestedById], references: [id], onDelete: Cascade)
 
+  intakeAnswer IntakeAnswer?
+
   @@index([sourceFileId])
   @@index([agencyId])
   @@index([status])
@@ -393,16 +395,18 @@ model IntakeStepProgress {
 }
 
 model IntakeAnswer {
-  id         String   @id @default(uuid())
-  sessionId  String
-  questionId String
-  fileId     String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id            String   @id @default(uuid())
+  sessionId     String
+  questionId    String
+  fileId        String
+  pipelineJobId String?  @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  session  IntakeSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  question IntakeQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  file     MediaFile      @relation(fields: [fileId], references: [id], onDelete: NoAction)
+  session     IntakeSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question    IntakeQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  file        MediaFile      @relation(fields: [fileId], references: [id], onDelete: NoAction)
+  pipelineJob PipelineJob?   @relation(fields: [pipelineJobId], references: [id], onDelete: SetNull)
 
   @@unique([sessionId, questionId])
   @@index([fileId])

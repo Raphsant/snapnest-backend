@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -11,10 +12,16 @@ import {
   FileType,
   FolderType,
   IntakeSessionStatus,
+  PipelineJobStatus,
+  PipelineSourceType,
   Prisma,
   UploadStatus,
 } from '@prisma/client';
 import { AgencyService } from '../agency/agency.service';
+import {
+  PipelineService,
+  TERMINAL_STATUSES,
+} from '../pipeline/pipeline.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { AcceptNdaDto } from './dto/accept-nda.dto';
@@ -30,6 +37,7 @@ import {
   IntakeStaffAnswerView,
   IntakeStaffSessionView,
   IntakeStepProgressView,
+  IntakeTranscriptView,
   NdaStatusResponse,
 } from './intake.types';
 
@@ -37,6 +45,8 @@ const INTAKE_URL_TTL_SECONDS = 60 * 60;
 /** Slack for players that stop a hair short of the reported duration. */
 const WATCHED_TOLERANCE_SECONDS = 2;
 const INTAKE_ANSWERS_FOLDER_NAME = 'Intake answers';
+/** Worker route that transcribes an intake answer into pipeline/<jobId>/transcript.srt. */
+const TRANSCRIBE_STAGE = 'transcribe';
 
 /** Statuses in which the client may still change progress and answers. */
 const WRITABLE_STATUSES: IntakeSessionStatus[] = [
@@ -75,6 +85,7 @@ const sessionInclude = {
           s3Key: true,
         },
       },
+      pipelineJob: { select: { id: true, status: true, error: true } },
     },
   },
 } satisfies Prisma.IntakeSessionInclude;
@@ -90,10 +101,13 @@ interface ClientContext {
 
 @Injectable()
 export class IntakeService {
+  private readonly logger = new Logger(IntakeService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly agencyService: AgencyService,
     private readonly uploadsService: UploadsService,
+    private readonly pipelineService: PipelineService,
   ) {}
 
   // ---- Client ----
@@ -321,7 +335,7 @@ export class IntakeService {
     );
     const submittedAt = new Date();
 
-    await this.prisma.$transaction(async (tx) => {
+    const createdJobIds = await this.prisma.$transaction(async (tx) => {
       // Flip status first: the row lock serializes this against a concurrent
       // setAnswer, so the completeness check below sees final answers.
       const { count } = await tx.intakeSession.updateMany({
@@ -374,9 +388,16 @@ export class IntakeService {
         }
         throw new ConflictException(problems.join('; '));
       }
+
+      return this.linkTranscriptionJobs(tx, answers, {
+        sessionId: session.id,
+        agencyId,
+        userId,
+      });
     });
 
-    // TODO(intake-pipeline): enqueue the submitted intake for processing here.
+    // After commit, so the worker never sees a job the submit rolled back.
+    await this.sendTranscribeMessages(createdJobIds);
 
     return this.toSessionView(
       program,
@@ -398,6 +419,7 @@ export class IntakeService {
       include: {
         user: { select: { email: true, firstName: true } },
         _count: { select: { answers: true } },
+        answers: { select: { pipelineJob: { select: { status: true } } } },
         program: {
           select: {
             steps: { select: { _count: { select: { questions: true } } } },
@@ -427,6 +449,10 @@ export class IntakeService {
         (sum, step) => sum + step._count.questions,
         0,
       ),
+      transcriptsReady: s.answers.filter(
+        (a) => a.pipelineJob?.status === PipelineJobStatus.COMPLETED,
+      ).length,
+      transcriptsTotal: s.answers.filter((a) => a.pipelineJob !== null).length,
     }));
   }
 
@@ -453,6 +479,7 @@ export class IntakeService {
                 INTAKE_URL_TTL_SECONDS,
               )
             : null,
+        transcript: await this.toTranscriptView(answer.pipelineJob),
       };
     }
 
@@ -680,6 +707,116 @@ export class IntakeService {
     });
     if (count === 0) {
       throw new ConflictException('Intake already submitted');
+    }
+  }
+
+  /**
+   * Inside the submit transaction: links each answer to a transcription job.
+   * A file with an active job (per PipelineJob_one_active_per_file) reuses it
+   * instead of inserting. Returns only the ids of jobs created here, which are
+   * the ones that need a transcribe message.
+   */
+  private async linkTranscriptionJobs(
+    tx: Prisma.TransactionClient,
+    answers: { id: string; questionId: string; fileId: string }[],
+    ctx: { sessionId: string; agencyId: string; userId: string },
+  ): Promise<string[]> {
+    const createdJobIds: string[] = [];
+    for (const answer of answers) {
+      const active = await tx.pipelineJob.findFirst({
+        where: {
+          sourceFileId: answer.fileId,
+          status: { notIn: TERMINAL_STATUSES },
+        },
+        select: { id: true, intakeAnswer: { select: { id: true } } },
+      });
+
+      let pipelineJobId: string;
+      if (active !== null) {
+        // pipelineJobId is unique, so a job already linked to another answer
+        // (the same file reused in another session) cannot be linked here too.
+        if (
+          active.intakeAnswer !== null &&
+          active.intakeAnswer.id !== answer.id
+        ) {
+          this.logger.warn(
+            `Intake answer left without transcript job: active pipeline job is linked to another answer ` +
+              `(sessionId=${ctx.sessionId}, questionId=${answer.questionId}, ` +
+              `fileId=${answer.fileId}, pipelineJobId=${active.id})`,
+          );
+          continue;
+        }
+        pipelineJobId = active.id;
+      } else {
+        const job = await tx.pipelineJob.create({
+          data: {
+            sourceType: PipelineSourceType.FILE,
+            sourceFileId: answer.fileId,
+            agencyId: ctx.agencyId,
+            requestedById: ctx.userId,
+            status: PipelineJobStatus.QUEUED,
+            manifest: {
+              intake: {
+                sessionId: ctx.sessionId,
+                questionId: answer.questionId,
+              },
+            },
+          },
+          select: { id: true },
+        });
+        pipelineJobId = job.id;
+        createdJobIds.push(job.id);
+      }
+
+      await tx.intakeAnswer.update({
+        where: { id: answer.id },
+        data: { pipelineJobId },
+      });
+    }
+    return createdJobIds;
+  }
+
+  /** A failed send marks that job FAILED and does not fail the caller. */
+  private async sendTranscribeMessages(jobIds: string[]): Promise<void> {
+    for (const jobId of jobIds) {
+      try {
+        await this.pipelineService.sendPipelineMessage(jobId, TRANSCRIBE_STAGE);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await this.prisma.pipelineJob.update({
+          where: { id: jobId },
+          data: {
+            status: PipelineJobStatus.FAILED,
+            error: `SQS enqueue failed: ${message}`,
+          },
+        });
+      }
+    }
+  }
+
+  private async toTranscriptView(
+    job: { id: string; status: PipelineJobStatus; error: string | null } | null,
+  ): Promise<IntakeTranscriptView> {
+    if (job === null) {
+      return { status: 'none', srtUrl: null, error: null };
+    }
+    switch (job.status) {
+      case PipelineJobStatus.QUEUED:
+        return { status: 'queued', srtUrl: null, error: null };
+      case PipelineJobStatus.COMPLETED:
+        return {
+          status: 'ready',
+          srtUrl: await this.uploadsService.presignGetUrl(
+            `pipeline/${job.id}/transcript.srt`,
+            INTAKE_URL_TTL_SECONDS,
+          ),
+          error: null,
+        };
+      case PipelineJobStatus.FAILED:
+        return { status: 'failed', srtUrl: null, error: job.error };
+      default:
+        // RUNNING and every intermediate pipeline status.
+        return { status: 'running', srtUrl: null, error: null };
     }
   }
 

@@ -147,7 +147,7 @@ const REQUIRED_CREATIVE_FIELDS = [
  */
 const MAX_APPROVED_CLIPS_PER_JOB = 10;
 
-const TERMINAL_STATUSES: PipelineJobStatus[] = [
+export const TERMINAL_STATUSES: PipelineJobStatus[] = [
   PipelineJobStatus.COMPLETED,
   PipelineJobStatus.FAILED,
 ];
@@ -1126,10 +1126,7 @@ export class PipelineService {
     return { fileId, folderId };
   }
 
-  private async sendPipelineMessage(
-    jobId: string,
-    stage?: string,
-  ): Promise<void> {
+  async sendPipelineMessage(jobId: string, stage?: string): Promise<void> {
     const message = stage === undefined ? { jobId } : { jobId, stage };
     await this.sqsClient.send(
       new SendMessageCommand({
