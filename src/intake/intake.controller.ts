@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   Put,
@@ -80,6 +82,7 @@ export class IntakeController {
   }
 
   @Post('intake/sessions/:sessionId/status')
+  @HttpCode(HttpStatus.OK)
   setSessionStatus(
     @CurrentUserId() userId: string,
     @Param('agencyId') agencyId: string,
@@ -97,6 +100,7 @@ export class IntakeController {
   // ---- Intake progress and answers (client) ----
 
   @Post('intake/steps/:stepId/progress')
+  @HttpCode(HttpStatus.OK)
   recordStepProgress(
     @CurrentUserId() userId: string,
     @Param('agencyId') agencyId: string,
@@ -117,6 +121,7 @@ export class IntakeController {
   }
 
   @Post('intake/submit')
+  @HttpCode(HttpStatus.OK)
   submit(
     @CurrentUserId() userId: string,
     @Param('agencyId') agencyId: string,
