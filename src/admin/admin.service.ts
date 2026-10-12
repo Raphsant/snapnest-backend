@@ -182,9 +182,7 @@ export class AdminService {
       },
     });
     if (membership === null) {
-      throw new BadRequestException(
-        'User is not a member of this agency',
-      );
+      throw new BadRequestException('User is not a member of this agency');
     }
 
     return this.prisma.folder.create({

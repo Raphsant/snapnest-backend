@@ -31,7 +31,9 @@ export class BatchMoveFilesDto {
    * intentionally rejected: batch moves must name an explicit destination.
    */
   @IsString({ message: TARGET_FOLDER_MESSAGE })
-  @ValidateIf((_: BatchMoveFilesDto, value: unknown) => value !== UNFILED_TARGET)
+  @ValidateIf(
+    (_: BatchMoveFilesDto, value: unknown) => value !== UNFILED_TARGET,
+  )
   @IsUUID('4', { message: TARGET_FOLDER_MESSAGE })
   targetFolderId!: string;
 }
