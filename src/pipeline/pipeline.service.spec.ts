@@ -1,10 +1,23 @@
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PipelineJob, PipelineJobStatus, Prisma } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ThumbnailService } from '../uploads/thumbnail.service';
+import { formatClipSrt } from './clip-captions';
 import { PipelineService } from './pipeline.service';
 
 jest.mock('../notifications/notifications.service', () => ({
@@ -24,6 +37,7 @@ jest.mock('@aws-sdk/client-s3', () => ({
   GetObjectCommand: jest.fn(),
   HeadObjectCommand: jest.fn(),
   ListObjectsV2Command: jest.fn(),
+  PutObjectCommand: jest.fn(),
 }));
 
 const mockSqsSend = jest.fn().mockResolvedValue({});
@@ -70,7 +84,9 @@ describe('PipelineService', () => {
   beforeEach(() => {
     mockSqsSend.mockClear();
     mockS3Send.mockReset();
-    (getSignedUrl as jest.Mock).mockResolvedValue('https://signed.example/clip');
+    (getSignedUrl as jest.Mock).mockResolvedValue(
+      'https://signed.example/clip',
+    );
     findUnique = jest.fn();
     updateMany = jest.fn().mockResolvedValue({ count: 1 });
     jobFindMany = jest.fn().mockResolvedValue([]);
@@ -430,6 +446,317 @@ describe('PipelineService', () => {
       expect(result.total).toBe(1);
       expect(result.items[0].clipId).toBe('clip-d');
       expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('clip captions', () => {
+    const generatedKey = 'pipeline/job-1/clips/captions/clip-1.srt';
+    const editedKey = 'pipeline/job-1/clips/captions/clip-1.edited.srt';
+
+    const GENERATED_SRT =
+      '1\n00:00:00,500 --> 00:00:01,750\nHola\n\n' +
+      '2\n00:00:02,000 --> 00:00:03,000\nAdiós\n';
+
+    const generatedBlocks = [
+      { index: 1, startMs: 500, endMs: 1750, text: 'Hola' },
+      { index: 2, startMs: 2000, endMs: 3000, text: 'Adiós' },
+    ];
+
+    const captionClip = { id: 'clip-1', approved: null };
+
+    const gateJob = (
+      clips: Prisma.JsonObject[] = [captionClip],
+      status: PipelineJobStatus = PipelineJobStatus.AWAITING_MANIFEST_APPROVAL,
+    ): PipelineJob => buildJob({ clips }, status);
+
+    type S3Input = { Bucket?: string; Key?: string };
+
+    const commandMock = (commandClass: unknown) =>
+      commandClass as jest.Mock<unknown, [S3Input]>;
+
+    // The command classes are bare jest.fn() constructors, so the key a send()
+    // targets is recovered from the constructor call that built that instance.
+    const getInput = (command: unknown): S3Input | undefined => {
+      const mock = commandMock(GetObjectCommand).mock;
+      const index = mock.instances.indexOf(command);
+      return index === -1 ? undefined : mock.calls[index][0];
+    };
+
+    const s3NotFound = (): Error =>
+      Object.assign(new Error('NoSuchKey'), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      });
+
+    /** S3 holds exactly `objects`; a Get on any other key is NoSuchKey. */
+    const s3WithObjects = (objects: Record<string, string>) =>
+      mockS3Send.mockImplementation((command: unknown) => {
+        const input = getInput(command);
+        if (input === undefined) {
+          // Put / Delete
+          return Promise.resolve({});
+        }
+        const text = objects[input.Key ?? ''];
+        if (text === undefined) {
+          return Promise.reject(s3NotFound());
+        }
+        return Promise.resolve({
+          Body: { transformToString: () => Promise.resolve(text) },
+        });
+      });
+
+    /** Awaits a call expected to reject and returns the rejection. */
+    const rejectionOf = (promise: Promise<unknown>): Promise<unknown> =>
+      promise.then(
+        () => {
+          throw new Error('expected the call to reject');
+        },
+        (error: unknown) => error,
+      );
+
+    beforeEach(() => {
+      // Constructor mocks are not reset by the outer beforeEach.
+      for (const commandClass of [
+        GetObjectCommand,
+        PutObjectCommand,
+        DeleteObjectCommand,
+      ]) {
+        commandMock(commandClass).mockClear();
+      }
+    });
+
+    describe('getClipCaptions', () => {
+      it('returns generated blocks and null edited when no edit exists', async () => {
+        findUnique.mockResolvedValue(gateJob());
+        s3WithObjects({ [generatedKey]: GENERATED_SRT });
+
+        await expect(
+          service.getClipCaptions('job-1', 'clip-1'),
+        ).resolves.toEqual({ generated: generatedBlocks, edited: null });
+      });
+
+      it('returns the edited blocks when an edit exists', async () => {
+        findUnique.mockResolvedValue(gateJob());
+        const editedBlocks = [
+          { ...generatedBlocks[0], text: 'Hola editado' },
+          generatedBlocks[1],
+        ];
+        s3WithObjects({
+          [generatedKey]: GENERATED_SRT,
+          [editedKey]: formatClipSrt(editedBlocks),
+        });
+
+        await expect(
+          service.getClipCaptions('job-1', 'clip-1'),
+        ).resolves.toEqual({
+          generated: generatedBlocks,
+          edited: editedBlocks,
+        });
+      });
+
+      it('is readable outside AWAITING_MANIFEST_APPROVAL', async () => {
+        findUnique.mockResolvedValue(
+          gateJob([captionClip], PipelineJobStatus.COMPLETED),
+        );
+        s3WithObjects({ [generatedKey]: GENERATED_SRT });
+
+        await expect(
+          service.getClipCaptions('job-1', 'clip-1'),
+        ).resolves.toEqual({ generated: generatedBlocks, edited: null });
+      });
+
+      it('404s when the generated slice is not in S3', async () => {
+        findUnique.mockResolvedValue(gateJob());
+        s3WithObjects({});
+
+        await expect(
+          service.getClipCaptions('job-1', 'clip-1'),
+        ).rejects.toThrow(
+          new NotFoundException('captions not generated for clip clip-1'),
+        );
+      });
+
+      it('404s for a clipId not in the manifest', async () => {
+        findUnique.mockResolvedValue(gateJob());
+        s3WithObjects({ [generatedKey]: GENERATED_SRT });
+
+        await expect(
+          service.getClipCaptions('job-1', 'clip-9'),
+        ).rejects.toThrow(
+          new NotFoundException('clip clip-9 not found in job job-1 manifest'),
+        );
+        expect(mockS3Send).not.toHaveBeenCalled();
+      });
+
+      it('400s for a clipId that fails the key-safe pattern', async () => {
+        await expect(service.getClipCaptions('job-1', 'a.b')).rejects.toThrow(
+          new BadRequestException('Invalid clipId'),
+        );
+        expect(findUnique).not.toHaveBeenCalled();
+        expect(mockS3Send).not.toHaveBeenCalled();
+      });
+
+      it('500s and logs the key when the stored generated slice is malformed', async () => {
+        const errorSpy = jest
+          .spyOn(Logger.prototype, 'error')
+          .mockImplementation(() => undefined);
+        findUnique.mockResolvedValue(gateJob());
+        s3WithObjects({ [generatedKey]: '1\nnot a timing line\nHola\n' });
+
+        await expect(
+          service.getClipCaptions('job-1', 'clip-1'),
+        ).rejects.toThrow(
+          new InternalServerErrorException(
+            'stored captions for clip clip-1 are malformed',
+          ),
+        );
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining(generatedKey),
+        );
+        errorSpy.mockRestore();
+      });
+    });
+
+    describe('saveClipCaptions', () => {
+      const edits = [
+        { index: 1, text: 'Hola editado' },
+        { index: 2, text: 'Adiós editado' },
+      ];
+
+      it('409s when the job is not AWAITING_MANIFEST_APPROVAL', async () => {
+        findUnique.mockResolvedValue(
+          gateJob([captionClip], PipelineJobStatus.APPROVED),
+        );
+        s3WithObjects({ [generatedKey]: GENERATED_SRT });
+
+        await expect(
+          service.saveClipCaptions('job-1', 'clip-1', { blocks: edits }),
+        ).rejects.toThrow(
+          new ConflictException(
+            'Pipeline job job-1 cannot edit captions while its status is APPROVED',
+          ),
+        );
+        expect(PutObjectCommand).not.toHaveBeenCalled();
+      });
+
+      it('409s when the clip is already assembled', async () => {
+        findUnique.mockResolvedValue(
+          gateJob([
+            {
+              ...captionClip,
+              assembled: {
+                s3Key: 'pipeline/job-1/final/final_clip-1_9x16.mp4',
+                completedAt: '2026-10-01T00:00:00.000Z',
+              },
+            },
+          ]),
+        );
+        s3WithObjects({ [generatedKey]: GENERATED_SRT });
+
+        await expect(
+          service.saveClipCaptions('job-1', 'clip-1', { blocks: edits }),
+        ).rejects.toThrow(
+          new ConflictException(
+            'clip clip-1 is already assembled; captions are locked',
+          ),
+        );
+        expect(PutObjectCommand).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        {
+          name: 'count mismatch',
+          blocks: [{ index: 1, text: 'Solo' }],
+          body: { message: 'edited captions have 1 block(s), expected 2' },
+        },
+        {
+          name: 'index mismatch',
+          blocks: [
+            { index: 1, text: 'a' },
+            { index: 3, text: 'b' },
+          ],
+          body: {
+            message: 'block at position 2 has index 3, expected 2',
+            position: 2,
+          },
+        },
+        {
+          name: 'all blank',
+          blocks: [
+            { index: 1, text: '' },
+            { index: 2, text: '   ' },
+          ],
+          body: { message: 'edited captions have no text' },
+        },
+      ])(
+        '422s on $name with { message, position } as the body',
+        async ({ blocks, body }) => {
+          findUnique.mockResolvedValue(gateJob());
+          s3WithObjects({ [generatedKey]: GENERATED_SRT });
+
+          const error = await rejectionOf(
+            service.saveClipCaptions('job-1', 'clip-1', { blocks }),
+          );
+
+          expect(error).toBeInstanceOf(UnprocessableEntityException);
+          expect((error as UnprocessableEntityException).getResponse()).toEqual(
+            body,
+          );
+          expect(PutObjectCommand).not.toHaveBeenCalled();
+        },
+      );
+
+      it('writes the merged SRT to the edited key and returns generated timings', async () => {
+        findUnique.mockResolvedValue(gateJob());
+        s3WithObjects({ [generatedKey]: GENERATED_SRT });
+        const merged = [
+          { index: 1, startMs: 500, endMs: 1750, text: 'Hola editado' },
+          { index: 2, startMs: 2000, endMs: 3000, text: 'Adiós editado' },
+        ];
+
+        await expect(
+          service.saveClipCaptions('job-1', 'clip-1', { blocks: edits }),
+        ).resolves.toEqual({ blocks: merged });
+
+        expect(PutObjectCommand).toHaveBeenCalledTimes(1);
+        expect(PutObjectCommand).toHaveBeenCalledWith({
+          Bucket: 'test-value',
+          Key: editedKey,
+          Body: Buffer.from(formatClipSrt(merged), 'utf-8'),
+          ContentType: 'application/x-subrip; charset=utf-8',
+        });
+      });
+    });
+
+    describe('deleteClipCaptions', () => {
+      it('409s when the job is not AWAITING_MANIFEST_APPROVAL', async () => {
+        findUnique.mockResolvedValue(
+          gateJob([captionClip], PipelineJobStatus.COMPLETED),
+        );
+
+        await expect(
+          service.deleteClipCaptions('job-1', 'clip-1'),
+        ).rejects.toThrow(
+          new ConflictException(
+            'Pipeline job job-1 cannot edit captions while its status is COMPLETED',
+          ),
+        );
+        expect(DeleteObjectCommand).not.toHaveBeenCalled();
+      });
+
+      it('deletes the edited key', async () => {
+        findUnique.mockResolvedValue(gateJob());
+        s3WithObjects({});
+
+        await expect(
+          service.deleteClipCaptions('job-1', 'clip-1'),
+        ).resolves.toBeUndefined();
+        expect(DeleteObjectCommand).toHaveBeenCalledWith({
+          Bucket: 'test-value',
+          Key: editedKey,
+        });
+        expect(mockS3Send).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });

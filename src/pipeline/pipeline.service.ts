@@ -4,6 +4,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
@@ -32,11 +33,20 @@ import { v4 as uuidv4 } from 'uuid';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ThumbnailService } from '../uploads/thumbnail.service';
+import {
+  CaptionBlock,
+  CaptionEditError,
+  CaptionParseError,
+  formatClipSrt,
+  mergeEditedText,
+  parseClipSrt,
+} from './clip-captions';
 import { ApprovePipelineJobDto } from './dto/approve-pipeline-job.dto';
 import { CreatePipelineJobDto } from './dto/create-pipeline-job.dto';
 import { CreateYoutubePipelineJobDto } from './dto/create-youtube-pipeline-job.dto';
 import { DeliverClipDto } from './dto/deliver-clip.dto';
 import { ListOutputsQueryDto } from './dto/list-outputs-query.dto';
+import { SaveClipCaptionsDto } from './dto/save-clip-captions.dto';
 import { SetOutputPostedDto } from './dto/set-output-posted.dto';
 
 type ManifestClip = Prisma.JsonObject & {
@@ -884,6 +894,184 @@ export class PipelineService {
   }
 
   /**
+   * Generated and operator-edited caption slices for one clip. Readable in
+   * any status so the dashboard can show captions read-only; `edited` is
+   * null when no edit has been saved.
+   */
+  async getClipCaptions(
+    jobId: string,
+    clipId: string,
+  ): Promise<{ generated: CaptionBlock[]; edited: CaptionBlock[] | null }> {
+    await this.assertCaptionClip(jobId, clipId, { editable: false });
+
+    const keys = this.captionKeys(jobId, clipId);
+    const generated = await this.loadGeneratedCaptions(jobId, clipId);
+    const editedText = await this.getObjectText(keys.edited);
+    const edited =
+      editedText === null
+        ? null
+        : this.parseStoredCaptions(keys.edited, editedText, clipId);
+
+    return { generated, edited };
+  }
+
+  /**
+   * Saves a text-only caption edit. Timings and indexes come from the
+   * generated slice; the client supplies text only. Written in the worker's
+   * own serialisation so creative and assemble re-validate it unchanged.
+   */
+  async saveClipCaptions(
+    jobId: string,
+    clipId: string,
+    dto: SaveClipCaptionsDto,
+  ): Promise<{ blocks: CaptionBlock[] }> {
+    await this.assertCaptionClip(jobId, clipId, { editable: true });
+
+    const generated = await this.loadGeneratedCaptions(jobId, clipId);
+    let merged: CaptionBlock[];
+    try {
+      merged = mergeEditedText(generated, dto.blocks);
+    } catch (error: unknown) {
+      if (error instanceof CaptionEditError) {
+        throw new UnprocessableEntityException({
+          message: error.message,
+          position: error.position,
+        });
+      }
+      throw error;
+    }
+
+    await this.putObjectText(
+      this.captionKeys(jobId, clipId).edited,
+      formatClipSrt(merged),
+    );
+    return { blocks: merged };
+  }
+
+  /**
+   * Reverts a clip to its generated captions by deleting the edit. S3
+   * DeleteObject succeeds on a missing key, so a repeat revert is a no-op.
+   */
+  async deleteClipCaptions(jobId: string, clipId: string): Promise<void> {
+    await this.assertCaptionClip(jobId, clipId, { editable: true });
+
+    await this.s3Client.send(
+      new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: this.captionKeys(jobId, clipId).edited,
+      }),
+    );
+  }
+
+  /**
+   * Shared guard for the caption endpoints. clipId reaches an S3 key, so its
+   * charset is checked before anything else. The clip must be in the job's
+   * manifest, since the worker only slices captions for manifest clips.
+   * `editable` adds the edit-gate checks: the job must be at manifest
+   * approval, and an assembled clip stays locked, matching approveJob.
+   */
+  private async assertCaptionClip(
+    jobId: string,
+    clipId: string,
+    { editable }: { editable: boolean },
+  ): Promise<{ job: PipelineJob; clip: ManifestClip }> {
+    if (!CLIP_ID_PATTERN.test(clipId)) {
+      throw new BadRequestException('Invalid clipId');
+    }
+
+    const job = await this.prisma.pipelineJob.findUnique({
+      where: { id: jobId },
+    });
+    if (job === null) {
+      throw new NotFoundException(`Pipeline job ${jobId} not found`);
+    }
+
+    const manifest = job.manifest;
+    if (manifest === null) {
+      // Queued or still running: no manifest means no clips yet.
+      throw new NotFoundException(
+        `clip ${clipId} not found in job ${jobId} manifest`,
+      );
+    }
+    if (!isPipelineManifest(manifest)) {
+      throw new InternalServerErrorException(
+        `Pipeline job ${jobId} has an invalid manifest`,
+      );
+    }
+    const clip = manifest.clips.find((candidate) => candidate.id === clipId);
+    if (clip === undefined) {
+      throw new NotFoundException(
+        `clip ${clipId} not found in job ${jobId} manifest`,
+      );
+    }
+
+    if (editable) {
+      if (job.status !== PipelineJobStatus.AWAITING_MANIFEST_APPROVAL) {
+        throw new ConflictException(
+          `Pipeline job ${jobId} cannot edit captions while its status is ${job.status}`,
+        );
+      }
+      if (clip.assembled !== undefined && clip.assembled !== null) {
+        throw new ConflictException(
+          `clip ${clipId} is already assembled; captions are locked`,
+        );
+      }
+    }
+
+    return { job, clip };
+  }
+
+  /**
+   * Must match snapnest-worker worker/artifacts.py clip_caption_key and
+   * edited_clip_caption_key.
+   */
+  private captionKeys(
+    jobId: string,
+    clipId: string,
+  ): { generated: string; edited: string } {
+    return {
+      generated: `pipeline/${jobId}/clips/captions/${clipId}.srt`,
+      edited: `pipeline/${jobId}/clips/captions/${clipId}.edited.srt`,
+    };
+  }
+
+  /** 404 when the worker has not written the slice; 500 when it is malformed. */
+  private async loadGeneratedCaptions(
+    jobId: string,
+    clipId: string,
+  ): Promise<CaptionBlock[]> {
+    const key = this.captionKeys(jobId, clipId).generated;
+    const text = await this.getObjectText(key);
+    if (text === null) {
+      throw new NotFoundException(`captions not generated for clip ${clipId}`);
+    }
+    return this.parseStoredCaptions(key, text, clipId);
+  }
+
+  /**
+   * Both stored files are written by trusted code (the worker, or this
+   * service's own serialiser), so a parse failure is a server fault, not a
+   * client one: log the key and detail, surface a 500.
+   */
+  private parseStoredCaptions(
+    key: string,
+    text: string,
+    clipId: string,
+  ): CaptionBlock[] {
+    try {
+      return parseClipSrt(text);
+    } catch (error: unknown) {
+      if (error instanceof CaptionParseError) {
+        this.logger.error(`Malformed captions at ${key}: ${error.message}`);
+        throw new InternalServerErrorException(
+          `stored captions for clip ${clipId} are malformed`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Cross-job listing of assembled outputs, enumerated from the manifests the
    * worker checkpoints into PipelineJob.manifest rather than from S3 — two
    * queries total instead of one ListObjectsV2 per job. The posted flag is
@@ -1185,6 +1373,43 @@ export class PipelineService {
       this.s3Client,
       new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
       { expiresIn: ttlSeconds },
+    );
+  }
+
+  /*
+   * Server-side reads and writes of small caption SRTs, the same pattern as
+   * ThumbnailService. This is a deliberate exception to the presigned-only
+   * rule, which governs client access: the dashboard never touches these
+   * objects directly, and the backend must validate edits against the
+   * generated slice before anything reaches S3.
+   */
+
+  /** Object body as UTF-8 text, or null when the key does not exist. */
+  private async getObjectText(key: string): Promise<string | null> {
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
+      );
+      if (response.Body === undefined) {
+        throw new Error(`Empty S3 object body for key ${key}`);
+      }
+      return await response.Body.transformToString('utf-8');
+    } catch (error: unknown) {
+      if (this.isS3NotFound(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async putObjectText(key: string, body: string): Promise<void> {
+    await this.s3Client.send(
+      new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: Buffer.from(body, 'utf-8'),
+        ContentType: 'application/x-subrip; charset=utf-8',
+      }),
     );
   }
 
