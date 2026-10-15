@@ -93,6 +93,22 @@ enum IntakeSessionStatus {
   COMPLETE
 }
 
+enum InvoiceKind {
+  INVOICE
+  CREDIT_NOTE
+}
+
+enum InvoiceStatus {
+  ISSUED
+  PAID
+  VOID
+}
+
+enum InvoiceLanguage {
+  EN
+  ES
+}
+
 model User {
   id          String      @id @default(uuid())
   cognitoSub  String      @unique
@@ -410,4 +426,108 @@ model IntakeAnswer {
 
   @@unique([sessionId, questionId])
   @@index([fileId])
+}
+
+model InvoiceClient {
+  id           String   @id @default(uuid())
+  code         String   @unique // 3-8 uppercase letters, validated in DTO
+  name         String
+  contactName  String?
+  email        String?
+  phone        String?
+  addressLine1 String?
+  addressLine2 String?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  invoices Invoice[]
+}
+
+/// Versioned issuer details snapshotted onto each invoice via issuerProfileId.
+///
+/// At most one row may have isCurrent = true. Prisma cannot express a partial
+/// unique index, so it is added by hand in the migration SQL:
+///   CREATE UNIQUE INDEX "IssuerProfile_isCurrent_key"
+///     ON "IssuerProfile" ("isCurrent") WHERE "isCurrent" = true;
+model IssuerProfile {
+  id           String   @id @default(uuid())
+  version      Int      @unique
+  legalName    String
+  dba          String
+  addressLine1 String
+  addressLine2 String
+  phone        String
+  ein          String
+  paymentLines String[] // empty => generic payment lines on the PDF
+  isCurrent    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  createdById  String?
+
+  invoices Invoice[]
+}
+
+/// Read with SELECT ... FOR UPDATE inside the transaction that inserts the Invoice; never read it outside that transaction.
+model InvoiceCounter {
+  kind    InvoiceKind
+  year    Int
+  lastSeq Int         @default(0)
+
+  @@id([kind, year])
+}
+
+model Invoice {
+  id                String          @id @default(uuid())
+  invoiceNo         String          @unique // STC-YYYY-NNN or STC-CN-YYYY-NNN
+  kind              InvoiceKind
+  year              Int
+  seq               Int
+  issuerProfileId   String
+  clientId          String
+  invoiceDate       DateTime        @db.Date
+  terms             String
+  dueDate           DateTime        @db.Date
+  taxRateBps        Int             @default(0)
+  subtotalCents     Int
+  taxCents          Int
+  totalCents        Int
+  status            InvoiceStatus   @default(ISSUED)
+  language          InvoiceLanguage @default(EN)
+  notes             String?
+  servicesSummary   String
+  paidDate          DateTime?       @db.Date
+  paymentRef        String?
+  voidReason        String?
+  replacesInvoiceId String?
+  pdfS3Key          String?
+  pdfFilename       String
+  pdfError          String? // set when render/upload failed; retry endpoint clears it
+  createdById       String
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  issuerProfile IssuerProfile @relation(fields: [issuerProfileId], references: [id], onDelete: Restrict)
+  client        InvoiceClient @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  replaces      Invoice?      @relation("InvoiceReplaces", fields: [replacesInvoiceId], references: [id], onDelete: Restrict)
+  replacedBy    Invoice[]     @relation("InvoiceReplaces")
+  items         InvoiceItem[]
+
+  @@unique([kind, year, seq])
+  @@index([status])
+  @@index([clientId])
+}
+
+model InvoiceItem {
+  id             String @id @default(uuid())
+  invoiceId      String
+  position       Int
+  name           String
+  description    String
+  qty            Int
+  unitPriceCents Int
+  amountCents    Int
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, position])
 }
