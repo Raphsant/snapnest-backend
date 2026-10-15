@@ -529,8 +529,7 @@ function drawItems(
   const firstItem = input.items[0];
   if (
     firstItem !== undefined &&
-    top + TABLE_HEADER_HEIGHT + measureItemRow(doc, firstItem) >
-      CONTENT_BOTTOM
+    top + TABLE_HEADER_HEIGHT + measureItemRow(doc, firstItem) > CONTENT_BOTTOM
   ) {
     doc.addPage();
     start = MARGIN;

@@ -129,9 +129,9 @@ describe('computeTotals', () => {
 
   it('rounds tax half up at exactly .5 cents', () => {
     // 1000 * 825 / 10000 = 82.5 -> 83
-    expect(computeTotals([{ qty: 1, unitPriceCents: 1000 }], 825).taxCents).toBe(
-      83,
-    );
+    expect(
+      computeTotals([{ qty: 1, unitPriceCents: 1000 }], 825).taxCents,
+    ).toBe(83);
     // 200 * 25 / 10000 = 0.5 -> 1
     expect(computeTotals([{ qty: 1, unitPriceCents: 200 }], 25).taxCents).toBe(
       1,
@@ -149,7 +149,9 @@ describe('computeTotals', () => {
   });
 
   it('allows a zero unit price and the 0 and 10000 bps bounds', () => {
-    expect(computeTotals([{ qty: 1, unitPriceCents: 0 }], 0).totalCents).toBe(0);
+    expect(computeTotals([{ qty: 1, unitPriceCents: 0 }], 0).totalCents).toBe(
+      0,
+    );
     expect(
       computeTotals([{ qty: 1, unitPriceCents: 500 }], 10_000).totalCents,
     ).toBe(1000);

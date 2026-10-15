@@ -575,8 +575,7 @@ export class InvoicingService {
     const invoices = rows.map((row): InvoiceListItem => {
       // Credit notes never become PAID, so they are never "open".
       const isOpen =
-        row.kind === InvoiceKind.INVOICE &&
-        row.status === InvoiceStatus.ISSUED;
+        row.kind === InvoiceKind.INVOICE && row.status === InvoiceStatus.ISSUED;
       if (isOpen) {
         openTotalCents += row.totalCents;
       }
