@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
 }
 
@@ -102,12 +102,12 @@ model User {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
-  folders     Folder[]
-  files       MediaFile[]
-  uploadJobs   UploadJob[]
-  pipelineJobs PipelineJob[]
-  memberships  AgencyMembership[]
-  pushTokens   PushToken[]
+  folders        Folder[]
+  files          MediaFile[]
+  uploadJobs     UploadJob[]
+  pipelineJobs   PipelineJob[]
+  memberships    AgencyMembership[]
+  pushTokens     PushToken[]
   ndaAcceptances NdaAcceptance[]
   intakeSessions IntakeSession[]
 
@@ -115,30 +115,30 @@ model User {
 }
 
 model Agency {
-  id        String   @id @default(uuid())
-  name      String
+  id         String   @id @default(uuid())
+  name       String
   ndaText    String?
   ndaVersion String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  memberships AgencyMembership[]
-  folders      Folder[]
-  files        MediaFile[]
-  pipelineJobs PipelineJob[]
+  memberships    AgencyMembership[]
+  folders        Folder[]
+  files          MediaFile[]
+  pipelineJobs   PipelineJob[]
   ndaAcceptances NdaAcceptance[]
   intakePrograms IntakeProgram[]
   intakeSessions IntakeSession[]
 }
 
 model AgencyMembership {
-  id        String     @id @default(uuid())
+  id        String           @id @default(uuid())
   agencyId  String
   userId    String
-  role      AgencyRole @default(CLIENT)
+  role      AgencyRole       @default(CLIENT)
   status    MembershipStatus @default(ACTIVE)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
 
   agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -161,11 +161,11 @@ model Folder {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  owner    User       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  agency   Agency?    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  parent   Folder?    @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: SetNull)
-  children Folder[]   @relation("FolderHierarchy")
-  files    MediaFile[]
+  owner          User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  agency         Agency?         @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  parent         Folder?         @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: SetNull)
+  children       Folder[]        @relation("FolderHierarchy")
+  files          MediaFile[]
   intakeSessions IntakeSession[]
 
   @@index([ownerId])
@@ -174,29 +174,29 @@ model Folder {
 }
 
 model MediaFile {
-  id             String       @id @default(uuid())
-  ownerId        String
-  agencyId       String?
-  folderId       String?
-  fileName       String
-  displayName    String?
-  mimeType       String
-  sizeBytes      BigInt
-  s3Key          String       @unique
-  fileType       FileType
-  source         FileSource
-  uploadStatus   UploadStatus @default(PENDING)
-  reviewStatus   ReviewStatus?
+  id              String        @id @default(uuid())
+  ownerId         String
+  agencyId        String?
+  folderId        String?
+  fileName        String
+  displayName     String?
+  mimeType        String
+  sizeBytes       BigInt
+  s3Key           String        @unique
+  fileType        FileType
+  source          FileSource
+  uploadStatus    UploadStatus  @default(PENDING)
+  reviewStatus    ReviewStatus?
   durationSeconds Int?
-  thumbnailS3Key String?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  thumbnailS3Key  String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  agency    Agency?   @relation(fields: [agencyId], references: [id], onDelete: SetNull)
-  folder    Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  uploadJob    UploadJob?
-  pipelineJobs PipelineJob[]
+  owner         User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  agency        Agency?        @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+  folder        Folder?        @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  uploadJob     UploadJob?
+  pipelineJobs  PipelineJob[]
   intakeAnswers IntakeAnswer[]
 
   @@index([ownerId])
@@ -250,7 +250,7 @@ model PipelineDelivery {
   id        String   @id @default(uuid())
   jobId     String
   clipId    String
-  fileId    String   // delivered MediaFile
+  fileId    String // delivered MediaFile
   folderId  String
   createdAt DateTime @default(now())
 
@@ -368,10 +368,10 @@ model IntakeSession {
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
-  program       IntakeProgram @relation(fields: [programId], references: [id], onDelete: Restrict)
-  agency        Agency        @relation(fields: [agencyId], references: [id], onDelete: Cascade)
-  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  answersFolder Folder        @relation(fields: [answersFolderId], references: [id], onDelete: NoAction)
+  program       IntakeProgram        @relation(fields: [programId], references: [id], onDelete: Restrict)
+  agency        Agency               @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answersFolder Folder               @relation(fields: [answersFolderId], references: [id], onDelete: NoAction)
   stepProgress  IntakeStepProgress[]
   answers       IntakeAnswer[]
 
