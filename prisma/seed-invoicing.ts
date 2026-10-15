@@ -154,6 +154,8 @@ async function main(): Promise<void> {
             seq: 1,
             issuerProfileId: profile.id,
             clientId: client.id,
+            billToName: 'Alpha Alliance',
+            billToLines: [],
             invoiceDate: utcDate(2026, 10, 13),
             terms: 'Due upon receipt',
             dueDate: utcDate(2026, 10, 13),

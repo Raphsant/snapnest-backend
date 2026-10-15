@@ -484,6 +484,8 @@ model Invoice {
   seq               Int
   issuerProfileId   String
   clientId          String
+  billToName        String // snapshot of client.name at issue time; the PDF renders from this
+  billToLines       String[] // snapshot of non-empty contactName, addressLine1, addressLine2, email, phone
   invoiceDate       DateTime        @db.Date
   terms             String
   dueDate           DateTime        @db.Date
