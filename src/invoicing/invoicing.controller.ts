@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -101,6 +103,7 @@ export class InvoicingController {
   }
 
   @Post('invoices/:id/pay')
+  @HttpCode(HttpStatus.OK)
   markPaid(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: MarkPaidDto,
@@ -109,6 +112,7 @@ export class InvoicingController {
   }
 
   @Post('invoices/:id/void')
+  @HttpCode(HttpStatus.OK)
   voidInvoice(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: VoidInvoiceDto,
@@ -125,6 +129,7 @@ export class InvoicingController {
   }
 
   @Post('invoices/:id/render-pdf')
+  @HttpCode(HttpStatus.OK)
   renderPdf(@Param('id', ParseUUIDPipe) id: string): Promise<InvoiceDetail> {
     return this.invoicingService.renderPdf(id);
   }
