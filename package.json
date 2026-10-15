@@ -23,6 +23,7 @@
     "backfill:unfiled": "ts-node --files -r dotenv/config scripts/backfill-unfiled.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.134.0",
     "@aws-sdk/client-s3": "^3.1044.0",
     "@aws-sdk/client-sqs": "^3.1044.0",
     "@aws-sdk/s3-request-presigner": "^3.1044.0",

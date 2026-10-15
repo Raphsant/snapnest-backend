@@ -21,8 +21,13 @@ import { IssueInvoiceDto } from './dto/issue-invoice.dto';
 import { ListInvoicesQueryDto } from './dto/list-invoices-query.dto';
 import { MarkPaidDto } from './dto/mark-paid.dto';
 import { PeekNumberQueryDto } from './dto/peek-number-query.dto';
+import { SuggestDescriptionsDto } from './dto/suggest-descriptions.dto';
 import { UpdateInvoiceClientDto } from './dto/update-invoice-client.dto';
 import { VoidInvoiceDto } from './dto/void-invoice.dto';
+import {
+  DescriptionSuggesterService,
+  SuggestDescriptionsResult,
+} from './description-suggester.service';
 import {
   InvoiceDetail,
   InvoiceDownloadUrl,
@@ -34,7 +39,10 @@ import {
 @Controller('admin/invoicing')
 @UseGuards(AuthGuard, AdminGuard)
 export class InvoicingController {
-  constructor(private readonly invoicingService: InvoicingService) {}
+  constructor(
+    private readonly invoicingService: InvoicingService,
+    private readonly descriptionSuggester: DescriptionSuggesterService,
+  ) {}
 
   @Get('clients')
   listClients(): Promise<InvoiceClient[]> {
@@ -132,5 +140,13 @@ export class InvoicingController {
   @HttpCode(HttpStatus.OK)
   renderPdf(@Param('id', ParseUUIDPipe) id: string): Promise<InvoiceDetail> {
     return this.invoicingService.renderPdf(id);
+  }
+
+  @Post('suggest-descriptions')
+  @HttpCode(HttpStatus.OK)
+  suggestDescriptions(
+    @Body() dto: SuggestDescriptionsDto,
+  ): Promise<SuggestDescriptionsResult> {
+    return this.descriptionSuggester.suggest(dto);
   }
 }

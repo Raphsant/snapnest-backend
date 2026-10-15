@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AdminGuard } from '../admin/admin.guard';
 import { AuthModule } from '../auth/auth.module';
+import { DescriptionSuggesterService } from './description-suggester.service';
 import { InvoicingController } from './invoicing.controller';
 import { InvoicingService } from './invoicing.service';
 
@@ -9,6 +10,6 @@ import { InvoicingService } from './invoicing.service';
 @Module({
   imports: [AuthModule],
   controllers: [InvoicingController],
-  providers: [InvoicingService, AdminGuard],
+  providers: [InvoicingService, DescriptionSuggesterService, AdminGuard],
 })
 export class InvoicingModule {}

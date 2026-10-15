@@ -273,6 +273,20 @@ expect 200 "20. POST render-pdf C" -X POST "$INV/$INV_C/render-pdf" \
   "${ADMIN[@]}"
 check "pdfError null" '.pdfError == null'
 
+echo "== Description suggester =="
+# 21
+expect 200 "21. POST suggest-descriptions" -X POST "$BASE/suggest-descriptions" \
+  "${ADMIN[@]}" "${JSON[@]}" \
+  -d '{"items":["Evento Houston","Evento Reus"]}'
+check "options length 10" '.options | length == 10'
+check "every description <= 110 chars" \
+  'all(.options[]; .description | length <= 110)'
+check "every serviceName has 2..5 words" \
+  'all(.options[]; .serviceName | [splits("\\s+")] | length | . >= 2 and . <= 5)'
+check "no duplicate descriptions" \
+  '[.options[].description] | length == (unique | length)'
+jq -r '.options[:3][] | "      - \(.serviceName): \(.description)"' "$BODY"
+
 echo
 echo "All invoicing checks passed. Issued in series $YEAR: $INV_A_NO $INV_B_NO" \
   "${PAR_NOS[*]} $INV_C_NO $CN_NO"
